@@ -1,0 +1,29 @@
+# Credentials & secrets
+.env
+
+# Device config (contains hardware MAC addresses / device IDs — personal data)
+# Copy config/go2rtc.yaml.example → config/go2rtc.yaml and fill in your device IDs
+config/go2rtc.yaml
+
+# Runtime data (created automatically on first run)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+webapp/frontend/node_modules/
+webapp/frontend/dist/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp

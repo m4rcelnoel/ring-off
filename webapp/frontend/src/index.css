@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 4%;
+    --foreground: 210 40% 98%;
+    --card: 222 40% 6%;
+    --card-foreground: 210 40% 98%;
+    --border: 217 33% 13%;
+    --input: 217 33% 13%;
+    --primary: 238 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 13%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 13%;
+    --muted-foreground: 215 20% 45%;
+    --accent: 217 33% 16%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --ring: 238 84% 67%;
+    --radius: 0.625rem;
+  }
+}
+
+@layer base {
+  * { border-color: hsl(var(--border)); }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+}
+
+video-rtc {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

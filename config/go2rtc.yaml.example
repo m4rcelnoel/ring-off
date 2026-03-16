@@ -1,0 +1,22 @@
+api:
+  listen: ':1984'
+
+rtsp:
+  listen: ':8555'
+
+# ── Streams ───────────────────────────────────────────────────────────────────
+# One entry per Ring camera. The name on the left becomes the label in the UI.
+#
+# How to find your device IDs:
+#   docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v -W 10
+# Look for topics like:
+#   ring/<location-id>/camera/<DEVICE_ID>/motion/state
+#
+# Note: if auto-discovery is enabled (default), new cameras are added here
+# automatically when first seen in MQTT — you may not need to edit this at all.
+#
+# ${RTSP_USER} and ${RTSP_PASS} are substituted from .env automatically.
+
+streams:
+  front_door: rtsp://${RTSP_USER}:${RTSP_PASS}@ring-mqtt:8554/YOUR_DEVICE_ID_live
+  # back_door:  rtsp://${RTSP_USER}:${RTSP_PASS}@ring-mqtt:8554/YOUR_DEVICE_ID_live

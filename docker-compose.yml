@@ -1,0 +1,99 @@
+services:
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: ring-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./data/mosquitto:/mosquitto/data
+      - ./data/mosquitto-log:/mosquitto/log
+
+  go2rtc:
+    image: alexxit/go2rtc
+    container_name: ring-go2rtc
+    restart: unless-stopped
+    ports:
+      - "1984:1984"   # web UI + API
+      - "8555:8555"   # re-stream RTSP
+    volumes:
+      - ./config/go2rtc.yaml:/config/go2rtc.yaml:ro
+    environment:
+      - RTSP_USER=${RTSP_USER}
+      - RTSP_PASS=${RTSP_PASS}
+    depends_on:
+      - ring-mqtt
+
+  ring-mqtt:
+    image: tsightler/ring-mqtt
+    container_name: ring-mqtt
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP streams (internal)
+      - "55123:55123" # first-run token setup
+    volumes:
+      - ./data/ring-mqtt:/data
+    environment:
+      - MQTTHOST=mosquitto
+      - MQTTPORT=1883
+      - MQTTUSER=
+      - MQTTPASSWORD=
+    depends_on:
+      - mosquitto
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  webapp:
+    build: ./webapp
+    container_name: ring-webapp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config                          # go2rtc.yaml (auto-discovery writes here)
+      - ./data/ring-mqtt:/ring-mqtt-data
+      - ./data/webapp:/app/data
+      - ./data/videos:/videos                     # recordings browser
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - GO2RTC_URL=http://go2rtc:1984
+      - GO2RTC_WS_URL=ws://go2rtc:1984
+      - GO2RTC_CONFIG=/config/go2rtc.yaml
+      - GO2RTC_CONTAINER=ring-go2rtc
+      - RING_CONTAINER=ring-mqtt
+      - RING_MQTT_CONFIG=/ring-mqtt-data/config.json
+      - RTSP_HOST=ring-mqtt
+      - RTSP_PORT=8554
+      - RTSP_USER=${RTSP_USER}
+      - RTSP_PASS=${RTSP_PASS}
+      - VIDEO_PATH=/videos
+    depends_on:
+      - mosquitto
+      - ring-mqtt
+      - go2rtc
+
+  recorder:
+    build: ./recorder
+    container_name: ring-recorder
+    restart: unless-stopped
+    volumes:
+      - ./data/videos:/videos
+      - ./data/webapp:/app/data:ro
+      - ./data/ring-mqtt:/ring-mqtt-data:ro
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - RTSP_HOST=ring-mqtt
+      - RTSP_PORT=8554
+      - RING_MQTT_CONFIG=/ring-mqtt-data/config.json
+      - VIDEO_PATH=/videos
+      - SETTINGS_FILE=/app/data/settings.json
+    depends_on:
+      - mosquitto
+      - ring-mqtt

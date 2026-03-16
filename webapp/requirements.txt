@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+ring-doorbell[listen]>=0.9.0
+httpx>=0.27.0
+websockets>=13.0
+docker>=7.0.0
+aiofiles>=24.0.0
+paho-mqtt>=2.0.0
+pyyaml>=6.0
+bcrypt>=4.0

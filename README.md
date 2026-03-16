@@ -1,0 +1,431 @@
+# Ring Off
+
+Self-hosted Ring doorbell management: live camera streams, motion & doorbell event recording, battery/WiFi monitoring — all without a Ring subscription.
+
+> **No cloud. No subscription. Your data stays at home.**
+
+---
+
+## Tested Hardware
+
+| Device | Status |
+|---|---|
+| Ring Video Doorbell 3 | ✅ Tested |
+
+Other Ring cameras that work with [ring-mqtt](https://github.com/tsightler/ring-mqtt) should work too — battery cameras, wired doorbells, and indoor/outdoor cameras. If you've tested another model, feel free to open a PR.
+
+---
+
+## Features
+
+- **WebRTC + MJPEG streams** — low-latency WebRTC via go2rtc's `video-rtc.js`, with MJPEG fallback
+- **Snapshot previews** — camera cards show the latest JPEG thumbnail before you start a stream
+- **Person detection** — motion events with an identified person get a distinct badge in the event feed
+- **Motion & ding recording** — clips saved locally on every event, configurable per type and duration
+- **Recordings browser** — browse, play, and delete clips directly from the sidebar
+- **Clip retention policy** — auto-delete recordings older than a configurable number of days
+- **Push notifications** — ntfy.sh and Gotify support; per-event-type toggle
+- **Auto-discovery** — new cameras found in MQTT are automatically added to go2rtc (no manual config)
+- **Password protection** — optional app-level login screen with bcrypt-hashed password
+- **Real-time event feed** — motion and doorbell events pushed instantly via WebSocket
+- **Device status** — battery level and WiFi signal for cameras; WiFi signal for chimes
+- **Ring login in the UI** — OAuth2 with 2FA support, no manual config file editing
+- **Home Assistant panel** — browse Ring-related HA entities directly from the dashboard
+- **NAS-ready** — change one volume mount to store recordings on your NAS
+- **Multi-arch Docker images** — runs on x86-64 and Raspberry Pi (arm64)
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          Your Network                           │
+│                                                                 │
+│   Browser                                                       │
+│     │  HTTP / WebSocket                                         │
+│     ▼                                                           │
+│  ┌──────────────────────────────┐                               │
+│  │   webapp  :8080              │  FastAPI backend              │
+│  │   React frontend             │  + React UI (built-in)        │
+│  └──────┬───────────────────────┘                               │
+│         │                                                       │
+│    ┌────┴──────────────────────────────────────┐                │
+│    │                                           │                │
+│    ▼  HTTP proxy / MJPEG stream                ▼  MQTT sub      │
+│  ┌────────────────┐                   ┌─────────────────┐       │
+│  │  go2rtc  :1984 │  RTSP relay       │  mosquitto:1883 │       │
+│  └───────┬────────┘                   └────────┬────────┘       │
+│          │  RTSP pull                          │  MQTT pub      │
+│          ▼                                     ▼                │
+│  ┌───────────────────────────────────────────────────────┐      │
+│  │               ring-mqtt  :8554 (RTSP)                 │      │
+│  │         Ring ↔ MQTT bridge + WebRTC → RTSP            │      │
+│  └───────────────────────┬───────────────────────────────┘      │
+│                          │  WebRTC / TLS                        │
+│    ┌─────────────────┐   │                                      │
+│    │  recorder       │   │                                      │
+│    │  (ffmpeg clips) │   │                                      │
+│    └────────┬────────┘   │                                      │
+│             │ RTSP pull  │                                      │
+│             └────────────┘                                      │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                      Ring Cloud ☁️
+
+Persistent data (./data/, gitignored)
+  ├── ring-mqtt/    Ring OAuth token + RTSP credentials
+  ├── webapp/       settings.json
+  ├── videos/       recorded MP4 clips
+  └── mosquitto/    MQTT message persistence
+```
+
+---
+
+## Prerequisites
+
+| Requirement | Version |
+|---|---|
+| Docker | 24+ |
+| Docker Compose | v2 (plugin) |
+| Ring account | any — subscription **not** required |
+
+---
+
+## Quick Start
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/m4rcelnoel/ring-off.git
+cd ring-off
+```
+
+**2. Copy the config files**
+
+```bash
+cp .env.example .env
+# You can leave it empty for now — credentials are filled in automatically after login
+
+cp config/go2rtc.yaml.example config/go2rtc.yaml
+# Edit this file to add your device IDs (or let auto-discovery handle it)
+```
+
+**3. Start the stack**
+
+```bash
+docker compose up -d
+```
+
+**4. Open the web UI and log in**
+
+Navigate to **http://localhost:8080** and enter your Ring email and password.
+If your account uses two-factor authentication, you will be prompted for the code.
+
+After a successful login the refresh token is saved to `data/ring-mqtt/config.json`
+and ring-mqtt is restarted automatically — no manual steps required.
+
+---
+
+## Stream Setup
+
+Ring camera streams are served by **go2rtc**, which re-streams ring-mqtt's internal RTSP feeds.
+
+> **Auto-discovery (recommended):** Ring Off automatically detects new cameras from MQTT and adds them to `config/go2rtc.yaml`. Just start the stack, log in, and wait a few seconds — cameras will appear without any manual config.
+
+### Manual setup (optional)
+
+If you prefer to name your cameras yourself, edit `config/go2rtc.yaml` (copy from `.example` first):
+
+```bash
+cp config/go2rtc.yaml.example config/go2rtc.yaml
+```
+
+#### Finding your device IDs
+
+Start the stack, then watch MQTT topics for a few seconds:
+
+```bash
+docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v -W 10
+```
+
+Look for topics like:
+
+```
+ring/<location-id>/camera/<DEVICE_ID>/motion/state ON
+```
+
+Add each `<DEVICE_ID>` to `config/go2rtc.yaml`:
+
+```yaml
+streams:
+  front_door: rtsp://${RTSP_USER}:${RTSP_PASS}@ring-mqtt:8554/DEVICE_ID_live
+  back_door:  rtsp://${RTSP_USER}:${RTSP_PASS}@ring-mqtt:8554/DEVICE_ID_live
+```
+
+> **Privacy note:** `config/go2rtc.yaml` is gitignored because it contains your camera device IDs (hardware MAC addresses). Never commit it — use the `.example` file for version control.
+
+Update `.env` with the credentials you use to log in to Ring:
+
+```bash
+RTSP_USER=your@email.com
+RTSP_PASS=yourringpassword
+```
+
+Then restart:
+
+```bash
+docker compose restart go2rtc webapp
+```
+
+---
+
+## Configuration
+
+### Environment variables (`.env`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `RTSP_USER` | — | Ring account email (used for RTSP auth) |
+| `RTSP_PASS` | — | Ring account password (used for RTSP auth) |
+
+### Settings (web UI → Settings gear)
+
+| Setting | Default | Description |
+|---|---|---|
+| Record on motion | ✅ | Save a clip when motion is detected |
+| Record on ding | ✅ | Save a clip when the doorbell is pressed |
+| Clip duration | 60 s | How long each clip is (10–300 s) |
+| Clip retention | 30 days | Auto-delete recordings older than N days (0 = keep forever) |
+| Notification URL | — | ntfy.sh topic URL or Gotify `/message?token=TOKEN` URL |
+| Notify on motion | ✅ | Send push notification on motion events |
+| Notify on ding | ✅ | Send push notification when doorbell rings |
+| App password | — | Protect the dashboard with a bcrypt password |
+
+Settings are stored in `data/webapp/settings.json` and take effect immediately — no restart needed.
+
+### Push Notifications
+
+Paste a notification endpoint URL into Settings to receive alerts:
+
+```
+# ntfy.sh (free, no account needed for public topics)
+https://ntfy.sh/your-secret-topic
+
+# Gotify (self-hosted)
+https://gotify.yourhost.com/message?token=YOUR_APP_TOKEN
+```
+
+### Service ports
+
+| Service | Port | Purpose |
+|---|---|---|
+| webapp | **8080** | Web UI + API (expose this one) |
+| go2rtc | 1984 | go2rtc web UI (optional, internal) |
+| mosquitto | 1883 | MQTT broker (internal) |
+| ring-mqtt | 8554 | RTSP streams (internal) |
+
+---
+
+## NAS Recording
+
+To store recordings on a NAS, change the recorder volume in `docker-compose.yml`:
+
+```yaml
+recorder:
+  volumes:
+    - /mnt/nas/ring-videos:/videos   # ← your NAS mount point
+```
+
+Recordings are organised by device ID:
+
+```
+data/videos/
+└── <device_id>/
+    ├── 20260316_124334_motion.mp4
+    └── 20260316_134512_ding.mp4
+```
+
+---
+
+## Using an Existing MQTT Broker
+
+If you already run a Mosquitto instance (e.g. as part of Home Assistant or another smart-home stack), you can point all services at it instead of starting the bundled one.
+
+**1. Remove the `mosquitto` service from `docker-compose.yml`**
+
+Delete or comment out the entire `mosquitto:` block.
+
+**2. Update every service that references the broker**
+
+```yaml
+# docker-compose.yml
+
+  ring-mqtt:
+    environment:
+      - MQTTHOST=192.168.1.100      # ← your broker IP or hostname
+      - MQTTPORT=1883
+      - MQTTUSER=myuser             # ← leave empty if no auth
+      - MQTTPASSWORD=mypassword
+
+  webapp:
+    environment:
+      - MQTT_HOST=192.168.1.100
+      - MQTT_PORT=1883
+
+  recorder:
+    environment:
+      - MQTT_HOST=192.168.1.100
+      - MQTT_PORT=1883
+```
+
+**3. Allow the `ring/#` topic on your broker**
+
+ring-mqtt publishes and subscribes to the `ring/#` topic tree.
+Make sure your broker's ACL permits this for the user above, or allows anonymous access from the Docker network.
+
+Example ACL entry for Mosquitto:
+
+```
+user myuser
+topic readwrite ring/#
+```
+
+**4. Remove the `mosquitto/` data volume lines** from any services that still reference it, then restart:
+
+```bash
+docker compose up -d
+```
+
+> **Note:** The bundled Mosquitto is intentionally minimal (no auth, local only). If your existing broker requires TLS, set `MQTTPORT=8883` and ensure the ring-mqtt container can reach it. ring-mqtt supports TLS automatically when the port is 8883.
+
+---
+
+## Home Assistant Integration
+
+1. Open **Settings** in the web UI
+2. Enter your HA URL (e.g. `http://homeassistant.local:8123`)
+3. Create a Long-Lived Access Token in HA → Profile → Security
+4. Paste the token and save
+
+The **Home Assistant** panel in the sidebar will then display all Ring-related entities from your HA instance.
+
+---
+
+## Pre-built Docker Images
+
+Pre-built multi-platform images (amd64 + arm64) are published to GitHub Container Registry on every push to `main`:
+
+```yaml
+# docker-compose.yml — use pre-built images instead of building locally
+services:
+  webapp:
+    image: ghcr.io/m4rcelnoel/ring-off-webapp:latest
+  recorder:
+    image: ghcr.io/m4rcelnoel/ring-off-recorder:latest
+```
+
+---
+
+## Development
+
+### Backend (FastAPI)
+
+```bash
+cd webapp
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8080
+```
+
+### Frontend (React + Vite)
+
+```bash
+cd webapp/frontend
+npm install
+npm run dev   # starts on :5173 with proxy to :8080
+```
+
+### Running the full stack locally
+
+```bash
+docker compose up mosquitto ring-mqtt go2rtc -d   # infrastructure only
+uvicorn webapp.main:app --reload                   # backend with hot-reload
+cd webapp/frontend && npm run dev                  # frontend with hot-reload
+```
+
+---
+
+## Mosquitto Configuration
+
+The default `config/mosquitto.conf` allows anonymous connections on the local Docker network.
+For a production deployment facing the internet, enable authentication:
+
+```conf
+listener 1883
+allow_anonymous false
+password_file /mosquitto/config/passwd
+```
+
+Generate a password file:
+
+```bash
+docker exec ring-mosquitto mosquitto_passwd -c /mosquitto/config/passwd myuser
+```
+
+---
+
+## Credits & Open Source Libraries
+
+This project is built on the shoulders of excellent open-source work:
+
+### Core services
+
+| Project | Author | License | Purpose |
+|---|---|---|---|
+| [ring-mqtt](https://github.com/tsightler/ring-mqtt) | tsightler | MIT | Ring → MQTT bridge + internal RTSP server |
+| [go2rtc](https://github.com/AlexxIT/go2rtc) | AlexxIT | MIT | RTSP relay, multi-protocol streaming |
+| [Eclipse Mosquitto](https://mosquitto.org) | Eclipse Foundation | EPL-2.0 | MQTT message broker |
+
+### Python backend
+
+| Package | License | Purpose |
+|---|---|---|
+| [FastAPI](https://fastapi.tiangolo.com) | MIT | Async web framework |
+| [uvicorn](https://www.uvicorn.org) | BSD | ASGI server |
+| [python-ring-doorbell](https://github.com/python-ring-doorbell/python-ring-doorbell) | LGPL-3.0 | Ring API client & OAuth |
+| [httpx](https://www.python-httpx.org) | BSD | Async HTTP client |
+| [websockets](https://websockets.readthedocs.io) | BSD | WebSocket client |
+| [paho-mqtt](https://eclipse.dev/paho/index.php?page=clients/python/index.php) | EPL-2.0 | MQTT client |
+| [docker-py](https://docker-py.readthedocs.io) | Apache-2.0 | Docker SDK for restarting containers |
+| [ffmpeg](https://ffmpeg.org) | LGPL/GPL | RTSP → MJPEG transcoding + clip recording |
+
+### Frontend
+
+| Package | License | Purpose |
+|---|---|---|
+| [React](https://react.dev) | MIT | UI framework |
+| [Vite](https://vitejs.dev) | MIT | Build tool |
+| [TypeScript](https://www.typescriptlang.org) | Apache-2.0 | Type safety |
+| [Tailwind CSS](https://tailwindcss.com) | MIT | Utility-first CSS |
+| [Radix UI](https://www.radix-ui.com) | MIT | Headless UI primitives |
+| [shadcn/ui](https://ui.shadcn.com) | MIT | Component patterns & styling |
+| [lucide-react](https://lucide.dev) | ISC | Icon library |
+| [clsx](https://github.com/lukeed/clsx) | MIT | Class name utility |
+| [tailwind-merge](https://github.com/dcastil/tailwind-merge) | MIT | Tailwind class deduplication |
+
+---
+
+## License
+
+MIT © 2026 Marcel Gruber
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+---
+
+> **Disclaimer:** This project is not affiliated with, endorsed by, or connected to Ring LLC or Amazon. Ring is a trademark of Ring LLC.
