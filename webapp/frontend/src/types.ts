@@ -53,6 +53,9 @@ export interface Settings {
   notify_url: string
   notify_on_motion: boolean
   notify_on_ding: boolean
+  notify_on_low_battery: boolean
+  low_battery_threshold: number
+  notify_on_connection_lost: boolean
   app_password_set: boolean
 }
 

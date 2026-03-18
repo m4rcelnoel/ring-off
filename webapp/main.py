@@ -66,20 +66,25 @@ snapshots: dict[str, bytes]= {}   # device_id → latest JPEG bytes
 motion_attrs: dict         = {}   # device_id → latest motion/attributes payload
 app_sessions: set[str]     = set()  # active session tokens
 _loop: asyncio.AbstractEventLoop | None = None
+_low_battery_notified: set[str] = set()  # device_ids already alerted for low battery
+_device_availability: dict[str, str] = {}  # device_id → "online"/"offline"
 
 # ── Persistence helpers ───────────────────────────────────────────────────────
 
 SETTINGS_DEFAULTS: dict = {
-    "ha_url":            "",
-    "ha_token":          "",
-    "record_motion":     True,
-    "record_ding":       True,
-    "record_duration":   60,
-    "retention_days":    30,
-    "notify_url":        "",
-    "notify_on_motion":  True,
-    "notify_on_ding":    True,
-    "app_password_hash": "",
+    "ha_url":                    "",
+    "ha_token":                  "",
+    "record_motion":             True,
+    "record_ding":               True,
+    "record_duration":           60,
+    "retention_days":            30,
+    "notify_url":                "",
+    "notify_on_motion":          True,
+    "notify_on_ding":            True,
+    "notify_on_low_battery":     True,
+    "low_battery_threshold":     20,
+    "notify_on_connection_lost": True,
+    "app_password_hash":         "",
 }
 
 
@@ -175,6 +180,21 @@ async def send_notification(event: dict) -> None:
                 )
     except Exception as e:
         print(f"Notification error: {e}")
+
+async def send_device_alert(title: str, body: str) -> None:
+    """Send a push notification for device-health events (low battery, connection lost)."""
+    settings = load_settings()
+    notify_url = settings.get("notify_url", "").strip()
+    if not notify_url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            if "/message" in notify_url:
+                await client.post(notify_url, json={"title": title, "message": body, "priority": 5})
+            else:
+                await client.post(notify_url, headers={"Title": title}, content=body.encode())
+    except Exception as e:
+        print(f"Device alert error: {e}")
 
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 
@@ -319,12 +339,44 @@ def setup_mqtt() -> mqtt.Client:
                         asyncio.run_coroutine_threadsafe(
                             broadcast({"type": "device_state",
                                        "device_id": device_id, "data": state}), _loop)
+
+                    # Low battery alert
+                    battery = data.get("batteryLevel")
+                    if battery is not None and _loop:
+                        cfg = load_settings()
+                        threshold = cfg.get("low_battery_threshold", 20)
+                        if cfg.get("notify_on_low_battery", True) and battery <= threshold:
+                            if device_id not in _low_battery_notified:
+                                _low_battery_notified.add(device_id)
+                                asyncio.run_coroutine_threadsafe(
+                                    send_device_alert(
+                                        "Low Battery",
+                                        f"Battery at {battery}% on {device_id}",
+                                    ), _loop)
+                        elif battery > threshold:
+                            _low_battery_notified.discard(device_id)
                 except Exception:
                     pass
 
-                # Auto-discover cameras from info topics too
-                if parts[2] == "camera":
-                    _check_auto_discovery(parts[3])
+            # availability: connection lost/restored
+            # ring/<loc>/<camera|chime>/<device_id>/availability
+            if (len(parts) == 6 and parts[4] == "availability"):
+                device_id   = parts[3]
+                status      = payload.strip().lower()
+                prev        = _device_availability.get(device_id)
+                _device_availability[device_id] = status
+                if status == "offline" and prev != "offline" and _loop:
+                    cfg = load_settings()
+                    if cfg.get("notify_on_connection_lost", True):
+                        asyncio.run_coroutine_threadsafe(
+                            send_device_alert(
+                                "Device Offline",
+                                f"Connection lost to device {device_id}",
+                            ), _loop)
+
+            # Auto-discover cameras from info topics too
+            if (len(parts) == 6 and parts[4] == "info" and parts[2] == "camera"):
+                _check_auto_discovery(parts[3])
 
         except Exception as e:
             print(f"MQTT message error: {e}")
@@ -399,6 +451,9 @@ class SettingsRequest(BaseModel):
     notify_url: str = ""
     notify_on_motion: bool = True
     notify_on_ding: bool = True
+    notify_on_low_battery: bool = True
+    low_battery_threshold: int = 20
+    notify_on_connection_lost: bool = True
 
 class AppLoginRequest(BaseModel):
     password: str
@@ -564,9 +619,12 @@ async def get_settings():
         "record_ding":      s.get("record_ding", True),
         "record_duration":  s.get("record_duration", 60),
         "retention_days":   s.get("retention_days", 30),
-        "notify_url":       s.get("notify_url", ""),
-        "notify_on_motion": s.get("notify_on_motion", True),
-        "notify_on_ding":   s.get("notify_on_ding", True),
+        "notify_url":                s.get("notify_url", ""),
+        "notify_on_motion":          s.get("notify_on_motion", True),
+        "notify_on_ding":            s.get("notify_on_ding", True),
+        "notify_on_low_battery":     s.get("notify_on_low_battery", True),
+        "low_battery_threshold":     s.get("low_battery_threshold", 20),
+        "notify_on_connection_lost": s.get("notify_on_connection_lost", True),
         "app_password_set": bool(s.get("app_password_hash")),
     }
 
@@ -582,9 +640,12 @@ async def save_settings_route(req: SettingsRequest):
         "record_ding":      req.record_ding,
         "record_duration":  max(10, min(300, req.record_duration)),
         "retention_days":   max(0, req.retention_days),
-        "notify_url":       req.notify_url,
-        "notify_on_motion": req.notify_on_motion,
-        "notify_on_ding":   req.notify_on_ding,
+        "notify_url":                req.notify_url,
+        "notify_on_motion":          req.notify_on_motion,
+        "notify_on_ding":            req.notify_on_ding,
+        "notify_on_low_battery":     req.notify_on_low_battery,
+        "low_battery_threshold":     max(1, min(100, req.low_battery_threshold)),
+        "notify_on_connection_lost": req.notify_on_connection_lost,
     }
     save_settings(updated)
     return {"success": True}

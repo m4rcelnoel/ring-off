@@ -40,15 +40,18 @@ export default function SettingsSheet({ open, onOpenChange, onRelogin }: Props) 
     setSaving(true); setError(''); setSaved(false)
     try {
       await api.post('/api/settings', {
-        ha_url:           haUrl,
-        ha_token:         haToken || undefined,
-        record_motion:    settings.record_motion,
-        record_ding:      settings.record_ding,
-        record_duration:  settings.record_duration,
-        retention_days:   settings.retention_days,
-        notify_url:       settings.notify_url,
-        notify_on_motion: settings.notify_on_motion,
-        notify_on_ding:   settings.notify_on_ding,
+        ha_url:                    haUrl,
+        ha_token:                  haToken || undefined,
+        record_motion:             settings.record_motion,
+        record_ding:               settings.record_ding,
+        record_duration:           settings.record_duration,
+        retention_days:            settings.retention_days,
+        notify_url:                settings.notify_url,
+        notify_on_motion:          settings.notify_on_motion,
+        notify_on_ding:            settings.notify_on_ding,
+        notify_on_low_battery:     settings.notify_on_low_battery,
+        low_battery_threshold:     settings.low_battery_threshold,
+        notify_on_connection_lost: settings.notify_on_connection_lost,
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -72,7 +75,7 @@ export default function SettingsSheet({ open, onOpenChange, onRelogin }: Props) 
     }
   }
 
-  const toggle = (key: 'record_motion' | 'record_ding' | 'notify_on_motion' | 'notify_on_ding', val: boolean) =>
+  const toggle = (key: 'record_motion' | 'record_ding' | 'notify_on_motion' | 'notify_on_ding' | 'notify_on_low_battery' | 'notify_on_connection_lost', val: boolean) =>
     setSettings(s => s ? { ...s, [key]: val } : s)
 
   return (
@@ -197,6 +200,39 @@ export default function SettingsSheet({ open, onOpenChange, onRelogin }: Props) 
                 <Switch
                   checked={settings?.notify_on_ding ?? true}
                   onCheckedChange={v => toggle('notify_on_ding', v)}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">Notify on Low Battery</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Alert when a device battery drops below the threshold</p>
+                </div>
+                <Switch
+                  checked={settings?.notify_on_low_battery ?? true}
+                  onCheckedChange={v => toggle('notify_on_low_battery', v)}
+                />
+              </div>
+              {settings?.notify_on_low_battery && (
+                <div className="space-y-2 pl-1">
+                  <Label htmlFor="battery-threshold">Low Battery Threshold (%)</Label>
+                  <Input
+                    id="battery-threshold"
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={settings?.low_battery_threshold ?? 20}
+                    onChange={e => setSettings(s => s ? { ...s, low_battery_threshold: parseInt(e.target.value) || 20 } : s)}
+                  />
+                </div>
+              )}
+              <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">Notify on Connection Lost</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Alert when a device goes offline</p>
+                </div>
+                <Switch
+                  checked={settings?.notify_on_connection_lost ?? true}
+                  onCheckedChange={v => toggle('notify_on_connection_lost', v)}
                 />
               </div>
             </div>
