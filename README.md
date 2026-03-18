@@ -4,6 +4,8 @@ Self-hosted Ring doorbell management: live camera streams, motion & doorbell eve
 
 > **No cloud. No subscription. Your data stays at home.**
 
+![Ring Off Web Interface](image/webinterface.png)
+
 ---
 
 ## Tested Hardware
