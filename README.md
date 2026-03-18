@@ -24,7 +24,7 @@ Other Ring cameras that work with [ring-mqtt](https://github.com/tsightler/ring-
 - **Motion & ding recording** — clips saved locally on every event, configurable per type and duration
 - **Recordings browser** — browse, play, and delete clips directly from the sidebar
 - **Clip retention policy** — auto-delete recordings older than a configurable number of days
-- **Push notifications** — ntfy.sh and Gotify support; per-event-type toggle
+- **Push notifications** — ntfy.sh and Gotify support; per-event-type toggles for motion, ding, low battery, and connection lost
 - **Auto-discovery** — new cameras found in MQTT are automatically added to go2rtc (no manual config)
 - **Password protection** — optional app-level login screen with bcrypt-hashed password
 - **Real-time event feed** — motion and doorbell events pushed instantly via WebSocket
@@ -201,6 +201,9 @@ docker compose restart go2rtc webapp
 | Notification URL | — | ntfy.sh topic URL or Gotify `/message?token=TOKEN` URL |
 | Notify on motion | ✅ | Send push notification on motion events |
 | Notify on ding | ✅ | Send push notification when doorbell rings |
+| Notify on low battery | ✅ | Alert when a device battery drops below the threshold |
+| Low battery threshold | 20% | Battery percentage that triggers the low battery alert |
+| Notify on connection lost | ✅ | Alert when a device goes offline |
 | App password | — | Protect the dashboard with a bcrypt password |
 
 Settings are stored in `data/webapp/settings.json` and take effect immediately — no restart needed.
