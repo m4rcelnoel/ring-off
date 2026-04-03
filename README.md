@@ -117,15 +117,10 @@ cp config/go2rtc.yaml.example config/go2rtc.yaml
 **3. Start the stack**
 
 ```bash
-# Minimum (events + device status only):
 docker compose up -d
-
-# With live streaming:
-docker compose --profile streaming up -d
-
-# With live streaming + local recording:
-docker compose --profile full up -d
 ```
+
+> **Optional services:** `go2rtc` (live streaming) and `recorder` (clip recording) are included by default. If you don't need one of them, comment out or remove its block in `docker-compose.yml`.
 
 **4. Open the web UI and log in**
 
@@ -261,19 +256,6 @@ data/videos/
 
 ---
 
-## Optional Services (Profiles)
-
-`go2rtc` (live streaming) and `recorder` (clip recording) are optional. Start only what you need:
-
-| Command | Services started |
-|---|---|
-| `docker compose up -d` | mosquitto, ring-mqtt, webapp |
-| `docker compose --profile streaming up -d` | + go2rtc |
-| `docker compose --profile recording up -d` | + recorder |
-| `docker compose --profile full up -d` | all five services |
-
----
-
 ## Using an Existing MQTT Broker
 
 If you already run a Mosquitto instance (e.g. as part of Home Assistant or another smart-home stack), you can point all services at it instead of starting the bundled one.
@@ -357,18 +339,18 @@ The **Home Assistant** panel in the sidebar will then display all Ring-related e
 
 ---
 
-## Pre-built Docker Images
+## Docker Images
 
-Pre-built multi-platform images (amd64 + arm64) are published to GitHub Container Registry on every push to `main`:
+Pre-built multi-platform images (amd64 + arm64) are published to GitHub Container Registry on every push to `main` and on every version tag:
 
-```yaml
-# docker-compose.yml — use pre-built images instead of building locally
-services:
-  webapp:
-    image: ghcr.io/m4rcelnoel/ring-off-webapp:latest
-  recorder:
-    image: ghcr.io/m4rcelnoel/ring-off-recorder:latest
-```
+| Image | Tag |
+|---|---|
+| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.2`, `1.2.3` |
+| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.2`, `1.2.3` |
+
+`docker-compose.yml` pulls `latest` by default. To pin to a specific version replace `latest` with a version tag.
+
+To build from source instead, see the [Development](#development) section.
 
 ---
 
@@ -523,28 +505,34 @@ docker compose restart mosquitto
 
 ## Development
 
-### Backend (FastAPI)
+### Build from source (all services)
+
+`docker-compose.yml` uses pre-built images from GHCR. Use the dev override to build locally instead:
 
 ```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+This builds `webapp` and `recorder` from source and tags them as `ring-off-webapp:dev` / `ring-off-recorder:dev`. All other services (`mosquitto`, `ring-mqtt`, `go2rtc`) are unchanged.
+
+### Backend hot-reload
+
+```bash
+# Start infrastructure only
+docker compose up mosquitto ring-mqtt go2rtc -d
+
+# Run backend with hot-reload
 cd webapp
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8080
 ```
 
-### Frontend (React + Vite)
+### Frontend hot-reload
 
 ```bash
 cd webapp/frontend
 npm install
 npm run dev   # starts on :5173 with proxy to :8080
-```
-
-### Running the full stack locally
-
-```bash
-docker compose up mosquitto ring-mqtt go2rtc -d   # infrastructure only
-uvicorn webapp.main:app --reload                   # backend with hot-reload
-cd webapp/frontend && npm run dev                  # frontend with hot-reload
 ```
 
 ---

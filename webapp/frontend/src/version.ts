@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.2.3'
+export const APP_VERSION = '1.2.4'
 export const APP_NAME = 'Ring Off'
 export const APP_AUTHOR = 'Marcel Gruber'
 export const APP_YEAR = '2026'

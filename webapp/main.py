@@ -324,6 +324,12 @@ def setup_mqtt() -> mqtt.Client:
                 device_type = parts[2]
                 device_id   = parts[3]
                 location_id = parts[1]
+
+                # Cameras publish info/state on every ring-mqtt startup — use it
+                # for auto-discovery so cameras appear without waiting for a motion event.
+                if device_type == "camera":
+                    _check_auto_discovery(device_id)
+
                 try:
                     data = json.loads(payload)
                     state = device_states.setdefault(device_id, {

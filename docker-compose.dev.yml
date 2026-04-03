@@ -1,0 +1,17 @@
+# Development override — builds webapp and recorder from local source instead of
+# pulling pre-built images from GHCR.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Everything else (mosquitto, ring-mqtt, go2rtc, volumes, env vars) is inherited
+# from docker-compose.yml unchanged.
+
+services:
+  webapp:
+    build: ./webapp
+    image: ring-off-webapp:dev
+
+  recorder:
+    build: ./recorder
+    image: ring-off-recorder:dev

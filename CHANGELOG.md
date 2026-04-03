@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-04-03
+
+### Fixed
+- **Auto-discovery never ran on startup** — camera discovery was only triggered inside the `motion`/`ding` MQTT event handler, meaning cameras were never added to `go2rtc.yaml` until a motion or doorbell event fired. ring-mqtt publishes `info/state` for every camera immediately when it connects to the broker; auto-discovery now also runs there (cameras only, not chimes), so streams are configured as soon as ring-mqtt starts.
+
 ## [1.2.3] - 2026-04-03
 
 ### Added

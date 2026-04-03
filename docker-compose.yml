@@ -35,11 +35,12 @@ services:
         max-size: 10m
         max-file: "3"
 
+  # ── Optional: live camera streaming ───────────────────────────────────────
+  # Remove or comment out this service if you only need events and recordings.
   go2rtc:
     image: alexxit/go2rtc
     container_name: ring-go2rtc
     restart: unless-stopped
-    profiles: ["streaming", "full"]
     ports:
       - "1984:1984"   # web UI + API
       - "8555:8555"   # re-stream RTSP
@@ -59,7 +60,7 @@ services:
       start_period: 15s
 
   webapp:
-    build: ./webapp
+    image: ghcr.io/m4rcelnoel/ring-off-webapp:latest
     container_name: ring-webapp
     restart: unless-stopped
     ports:
@@ -93,11 +94,12 @@ services:
         condition: service_healthy
         required: false
 
+  # ── Optional: local video recording ───────────────────────────────────────
+  # Remove or comment out this service if you don't want clips saved locally.
   recorder:
-    build: ./recorder
+    image: ghcr.io/m4rcelnoel/ring-off-recorder:latest
     container_name: ring-recorder
     restart: unless-stopped
-    profiles: ["recording", "full"]
     volumes:
       - ./data/videos:/videos
       - ./data/webapp:/app/data:ro
