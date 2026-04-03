@@ -122,13 +122,15 @@ docker compose up -d
 
 > **Optional services:** `go2rtc` (live streaming) and `recorder` (clip recording) are included by default. If you don't need one of them, comment out or remove its block in `docker-compose.yml`.
 
-**4. Open the web UI and log in**
+**4. Open the web UI and log in with your Ring account**
 
-Navigate to **http://localhost:8080** and enter your Ring email and password.
+> **This step is required.** ring-mqtt needs a Ring OAuth token before it can connect to your devices. No cameras will appear until you complete the login.
+
+Navigate to **http://localhost:8080** (or your server's IP) and enter your Ring email and password.
 If your account uses two-factor authentication, you will be prompted for the code.
 
 After a successful login the refresh token is saved to `data/ring-mqtt/config.json`
-and ring-mqtt is restarted automatically — no manual steps required.
+and ring-mqtt is restarted automatically. Wait a few seconds — cameras will appear once ring-mqtt connects to the Ring API.
 
 ---
 
@@ -345,8 +347,8 @@ Pre-built multi-platform images (amd64 + arm64) are published to GitHub Containe
 
 | Image | Tag |
 |---|---|
-| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.2`, `1.2.3` |
-| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.2`, `1.2.3` |
+| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.2`, `1.2.5` |
+| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.2`, `1.2.5` |
 
 `docker-compose.yml` pulls `latest` by default. To pin to a specific version replace `latest` with a version tag.
 
@@ -419,10 +421,23 @@ docker compose restart mosquitto
 
 ---
 
+### ring-mqtt is waiting for a Ring token (fresh deployment)
+
+**Symptom:** `No refresh token was found in the state file, use the Web UI at http://<host_ip_address>:55123/ to generate a token` in ring-mqtt logs. No cameras appear in the dashboard.
+
+**Cause:** ring-mqtt has never been authenticated with your Ring account. This is expected on a fresh deployment.
+
+**Fix:** Open **http://\<your-server-ip\>:8080** in a browser and log in with your Ring credentials. The Ring Off web UI handles the OAuth flow and writes the token to `data/ring-mqtt/config.json` automatically. ring-mqtt will restart and connect within seconds.
+
+> You only need to do this once. The token is persisted in the `data/ring-mqtt/` volume and survives container restarts.
+
+---
+
 ### Cameras do not appear in the dashboard
 
-1. **Check ring-mqtt is connected to the MQTT broker** — see the section above.
-2. **Check ring-mqtt is authenticated with Ring:**
+1. **Make sure you have logged in** — see the section above. ring-mqtt cannot connect to Ring without a token.
+2. **Check ring-mqtt is connected to the MQTT broker** — see the section above.
+3. **Check ring-mqtt is authenticated with Ring:**
    ```bash
    docker compose logs ring-mqtt | grep -E "Ring API|token"
    ```

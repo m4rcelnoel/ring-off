@@ -28,4 +28,4 @@ console.log('ring-mqtt-init: patched config.json with missing MQTT defaults');
 "
 fi
 
-exec /init "\$@"
+exec /init

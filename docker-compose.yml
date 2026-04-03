@@ -53,7 +53,7 @@ services:
       ring-mqtt:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:1984/api/ 2>/dev/null"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1984"]
       interval: 10s
       timeout: 5s
       retries: 5
