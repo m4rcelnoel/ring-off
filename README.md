@@ -104,14 +104,24 @@ git clone https://github.com/m4rcelnoel/ring-off.git
 cd ring-off
 ```
 
-**2. Copy the config files**
+**2. Copy and fill in the config files**
 
 ```bash
 cp .env.example .env
-# You can leave it empty for now — credentials are filled in automatically after login
+```
 
+Open `.env` and set your Ring account credentials:
+
+```env
+RTSP_USER=your@email.com
+RTSP_PASS=yourringpassword
+```
+
+These are used by go2rtc and the webapp to authenticate against ring-mqtt's internal RTSP server. They must be your Ring account email and password — the same credentials you will enter in step 4.
+
+```bash
 cp config/go2rtc.yaml.example config/go2rtc.yaml
-# Edit this file to add your device IDs (or let auto-discovery handle it)
+# Auto-discovery will fill this in for you — no manual editing needed
 ```
 
 **3. Start the stack**
@@ -122,15 +132,18 @@ docker compose up -d
 
 > **Optional services:** `go2rtc` (live streaming) and `recorder` (clip recording) are included by default. If you don't need one of them, comment out or remove its block in `docker-compose.yml`.
 
-**4. Open the web UI and log in with your Ring account**
+**4. Authenticate ring-mqtt with your Ring account (port 55123)**
 
-> **This step is required.** ring-mqtt needs a Ring OAuth token before it can connect to your devices. No cameras will appear until you complete the login.
+> **This step is required on first run.** ring-mqtt needs a Ring OAuth token before it can connect to your devices. No cameras will appear until this is done.
 
-Navigate to **http://localhost:8080** (or your server's IP) and enter your Ring email and password.
+Navigate to **http://\<your-server-ip\>:55123** and log in with your Ring email and password.
 If your account uses two-factor authentication, you will be prompted for the code.
 
-After a successful login the refresh token is saved to `data/ring-mqtt/config.json`
-and ring-mqtt is restarted automatically. Wait a few seconds — cameras will appear once ring-mqtt connects to the Ring API.
+After a successful login the token is saved to `data/ring-mqtt/config.json` and ring-mqtt connects to the Ring API automatically. You only need to do this once — the token persists across restarts.
+
+**5. Open the Ring Off web UI**
+
+Navigate to **http://\<your-server-ip\>:8080**. Wait a few seconds after the ring-mqtt login — cameras will appear automatically once ring-mqtt has connected and published device state via MQTT.
 
 ---
 
@@ -427,7 +440,7 @@ docker compose restart mosquitto
 
 **Cause:** ring-mqtt has never been authenticated with your Ring account. This is expected on a fresh deployment.
 
-**Fix:** Open **http://\<your-server-ip\>:8080** in a browser and log in with your Ring credentials. The Ring Off web UI handles the OAuth flow and writes the token to `data/ring-mqtt/config.json` automatically. ring-mqtt will restart and connect within seconds.
+**Fix:** Open **http://\<your-server-ip\>:55123** in a browser and log in with your Ring credentials. ring-mqtt will write the token to `data/ring-mqtt/config.json` and connect within seconds. Then open the Ring Off web UI at `:8080`.
 
 > You only need to do this once. The token is persisted in the `data/ring-mqtt/` volume and survives container restarts.
 
@@ -435,7 +448,7 @@ docker compose restart mosquitto
 
 ### Cameras do not appear in the dashboard
 
-1. **Make sure you have logged in** — see the section above. ring-mqtt cannot connect to Ring without a token.
+1. **Make sure you have authenticated ring-mqtt** — open `http://<host>:55123` and log in with your Ring credentials. See the section above for details.
 2. **Check ring-mqtt is connected to the MQTT broker** — see the section above.
 3. **Check ring-mqtt is authenticated with Ring:**
    ```bash

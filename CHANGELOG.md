@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go2rtc health check failing** — the health check used `wget`, which is not available in the `alexxit/go2rtc` image. Replaced with `nc -z 127.0.0.1 1984` (netcat TCP check) which works in the Alpine-based image.
 
 ### Documentation
-- **Initial Ring login is required on fresh deployments** — added a prominent note in Quick Start (step 4) and a dedicated troubleshooting entry explaining that ring-mqtt needs a Ring OAuth token before cameras appear. The token is obtained by logging in via the Ring Off web UI at `:8080`; it persists across restarts.
+- **Initial Ring authentication documented** — Quick Start now has an explicit step 4 to authenticate ring-mqtt via its web UI at `:55123` before opening the Ring Off dashboard at `:8080`. Added a dedicated troubleshooting entry for the "no refresh token" case with the correct port.
+- **RTSP credentials must be set before starting** — Quick Start step 2 now explicitly instructs users to fill in `RTSP_USER` / `RTSP_PASS` in `.env` with their Ring account email and password. Previously the step said "you can leave it empty for now", which caused streams to fail silently. The `.env.example` comment has been corrected to match.
 
 ## [1.2.4] - 2026-04-03
 
