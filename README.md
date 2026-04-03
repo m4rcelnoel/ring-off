@@ -333,6 +333,145 @@ services:
 
 ---
 
+## Troubleshooting
+
+### Quick health check
+
+```bash
+docker compose ps                        # all containers should be "Up"
+docker compose logs --tail=50 <service>  # check a specific service
+```
+
+---
+
+### ring-mqtt cannot connect to the MQTT broker
+
+**Symptom:** Repeated `Unable to connect to MQTT broker` lines in `docker compose logs ring-mqtt`.
+
+**Most common cause (fresh deployment):** ring-mqtt's first-run token setup writes a minimal `config.json` that contains only `ring_token` — `mqtt_url` and other required fields are missing. Since v1.2.1 this is fixed automatically by a startup wrapper, but if you are on an older version you can patch it manually:
+
+```bash
+# On the host, in the project directory:
+docker exec ring-mqtt cat /data/config.json \
+  | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+d.setdefault('mqtt_url', 'mqtt://mosquitto:1883')
+d.setdefault('mqtt_options', '')
+d.setdefault('enable_cameras', True)
+d.setdefault('enable_modes', False)
+d.setdefault('enable_panic', False)
+d.setdefault('hass_topic', 'homeassistant/status')
+d.setdefault('ring_topic', 'ring')
+d.setdefault('location_ids', [])
+d.setdefault('disarm_code', '')
+print(json.dumps(d, indent=2))
+" | tee data/ring-mqtt/config.json
+docker compose restart ring-mqtt
+```
+
+**Check:** After restart you should see `Successfully connected to MQTT broker` in the logs.
+
+---
+
+### ring-mqtt shows `Invalid URL` on startup
+
+**Symptom:** `WARNING - Unhandled Promise Rejection / Invalid URL` in ring-mqtt logs.
+
+**Cause:** Same as above — `mqtt_url` is missing or empty in `data/ring-mqtt/config.json`. Apply the patch above.
+
+---
+
+### Mosquitto fails to write its log file
+
+**Symptom:** `Error: Unable to open log file /mosquitto/log/mosquitto.log for writing` on startup.
+
+**Cause:** The log directory is owned by root on the host but the `mosquitto` user (UID 1883) inside the container cannot write to it.
+
+**Fix (option A — remove file logging, recommended):** Remove the `log_dest file` line from `config/mosquitto.conf`. Docker already captures stdout.
+
+**Fix (option B — fix permissions):**
+```bash
+sudo chown -R 1883:1883 data/mosquitto-log
+docker compose restart mosquitto
+```
+
+---
+
+### Cameras do not appear in the dashboard
+
+1. **Check ring-mqtt is connected to the MQTT broker** — see the section above.
+2. **Check ring-mqtt is authenticated with Ring:**
+   ```bash
+   docker compose logs ring-mqtt | grep -E "Ring API|token"
+   ```
+   You should see `Successfully established connection to Ring API`. If not, the refresh token is expired — log in again via the Ring Off web UI.
+3. **Check MQTT topics are being published:**
+   ```bash
+   docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v -W 10
+   ```
+   You should see `ring/<location>/camera/<device_id>/...` topics within a few seconds.
+4. **Check go2rtc is running:**
+   ```bash
+   docker compose logs go2rtc
+   ```
+   Open `http://<host>:1984` — you should see your cameras listed.
+
+---
+
+### No live stream / stream shows a black screen
+
+1. **Check go2rtc can pull the RTSP feed from ring-mqtt:**
+   ```bash
+   docker compose logs go2rtc | grep -i "error\|rtsp"
+   ```
+2. **Check RTSP credentials** — `RTSP_USER` and `RTSP_PASS` in `.env` must match your Ring account email and password.
+3. **Check go2rtc.yaml has the correct device IDs.** Run the MQTT subscriber above to find your device IDs, then compare with `config/go2rtc.yaml`.
+4. **Try the MJPEG fallback** — click the "MJPEG" button on the camera card. If MJPEG works but WebRTC does not, the issue is WebRTC negotiation (often a network/NAT problem between browser and server).
+
+---
+
+### No motion or ding events appearing
+
+1. **Check the recorder is connected to MQTT:**
+   ```bash
+   docker compose logs recorder | grep -i "mqtt\|error"
+   ```
+2. **Verify events are published on MQTT:**
+   ```bash
+   docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v
+   # then trigger a motion event or press the doorbell
+   ```
+3. **Check the webapp WebSocket** — open the browser dev tools Network tab and look for the `/ws/events` WebSocket connection. It should show `OPEN`.
+
+---
+
+### Recordings are not being saved
+
+1. **Check the recorder logs:**
+   ```bash
+   docker compose logs recorder
+   ```
+2. **Check disk space** on the recordings volume.
+3. **Verify the `VIDEO_PATH` volume is writable** — the recorder container must be able to write to `/videos`.
+
+---
+
+### Push notifications are not delivered
+
+1. **Verify the notification URL in Settings** — ntfy.sh topics must be reachable from the server (not just the browser). Test with:
+   ```bash
+   docker exec ring-webapp curl -s -o /dev/null -w "%{http_code}" \
+     -d "test" https://ntfy.sh/your-topic
+   ```
+   A `200` response means the server can reach ntfy.sh.
+2. **Check the webapp logs** for any HTTP errors when events fire:
+   ```bash
+   docker compose logs webapp | grep -i "notif\|error"
+   ```
+
+---
+
 ## Development
 
 ### Backend (FastAPI)

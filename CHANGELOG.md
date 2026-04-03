@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-04-03
+
+### Fixed
+- **ring-mqtt MQTT broker connection failure on fresh deployments** — ring-mqtt's first-run token setup (port 55123) writes a minimal `config.json` containing only `ring_token`, omitting `mqtt_url` and other required fields. This caused an `Invalid URL` error in ring-mqtt's `Config.init` and prevented it from ever connecting to the Mosquitto broker. A startup wrapper script (`config/ring-mqtt-init.sh`) now patches `config.json` with the correct defaults before ring-mqtt starts, without affecting any existing values.
+- **Mosquitto log file error on startup** — removed `log_dest file` directive from `mosquitto.conf`; Docker captures stdout already, so the log volume mount is no longer needed.
+
 ## [1.2.0] - 2026-03-18
 
 ### Added

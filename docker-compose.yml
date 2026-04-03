@@ -9,7 +9,6 @@ services:
     volumes:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./data/mosquitto:/mosquitto/data
-      - ./data/mosquitto-log:/mosquitto/log
 
   go2rtc:
     image: alexxit/go2rtc
@@ -30,16 +29,13 @@ services:
     image: tsightler/ring-mqtt
     container_name: ring-mqtt
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/ring-mqtt-init.sh"]
     ports:
       - "8554:8554"   # RTSP streams (internal)
       - "55123:55123" # first-run token setup
     volumes:
       - ./data/ring-mqtt:/data
-    environment:
-      - MQTTHOST=mosquitto
-      - MQTTPORT=1883
-      - MQTTUSER=
-      - MQTTPASSWORD=
+      - ./config/ring-mqtt-init.sh:/ring-mqtt-init.sh:ro
     depends_on:
       - mosquitto
     logging:
