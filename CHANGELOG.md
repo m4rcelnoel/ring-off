@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-04-03
+
+### Added
+- **Docker Compose profiles** — `go2rtc` and `recorder` are now optional. Use `--profile streaming` for live video, `--profile recording` for clip saving, or `--profile full` for everything. A plain `docker compose up` starts only the core stack (mosquitto, ring-mqtt, webapp).
+- **Health checks** — mosquitto now has a proper health check (`mosquitto_sub` on `$SYS/#`); go2rtc checks its REST API endpoint. `ring-mqtt` and downstream services wait for `service_healthy` before starting, eliminating the startup race condition where ring-mqtt tried to connect before mosquitto was ready.
+
+### Fixed
+- **"Using an Existing MQTT Broker" documentation was incorrect** — the section told users to set `MQTTHOST`/`MQTTPORT` environment variables on ring-mqtt, but ring-mqtt's Docker mode ignores these variables entirely. Corrected to show how to set `mqtt_url` directly in `data/ring-mqtt/config.json`, including examples for authenticated and TLS brokers.
+
+## [1.2.2] - 2026-04-03
+
+### Fixed
+- **Battery and WiFi info never showing on camera cards** — `/api/cameras` was extracting `device_id` from go2rtc's active `producers` list, which is only populated while a stream is actively being viewed (go2rtc uses lazy RTSP connections). On a freshly loaded dashboard with no active stream, `producers` was always empty, `device_id` was `null` for every camera, and `cameraDeviceState()` returned `undefined` — so battery level, WiFi signal, and signal strength were never rendered. Fixed by parsing `go2rtc.yaml` directly to extract device IDs, with active producers kept as a fallback.
+
 ## [1.2.1] - 2026-04-03
 
 ### Fixed

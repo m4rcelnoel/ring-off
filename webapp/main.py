@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import bcrypt
+import yaml
 import docker
 import httpx
 import websockets as ws_lib
@@ -563,18 +564,34 @@ async def ring_verify(req: RingVerifyRequest):
 
 @app.get("/api/cameras")
 async def get_cameras():
+    # go2rtc uses lazy RTSP connections: producers is only populated while a stream
+    # is actively being viewed. Parse go2rtc.yaml directly so device_id is always
+    # available regardless of whether anyone is currently streaming.
+    yaml_device_ids: dict[str, str] = {}
+    try:
+        with open(GO2RTC_CONFIG) as f:
+            cfg = yaml.safe_load(f)
+        for stream_name, url in (cfg.get("streams") or {}).items():
+            if isinstance(url, str):
+                m = re.search(r"/([^/]+)_live", url)
+                if m:
+                    yaml_device_ids[stream_name] = m.group(1)
+    except Exception:
+        pass
+
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{GO2RTC_URL}/api/streams")
             streams = resp.json()
             cameras = []
             for name, info in streams.items():
-                device_id = None
-                for p in info.get("producers", []):
-                    m = re.search(r"/([^/]+)_live", p.get("url", ""))
-                    if m:
-                        device_id = m.group(1)
-                        break
+                device_id = yaml_device_ids.get(name)
+                if not device_id and isinstance(info, dict):
+                    for p in info.get("producers", []):
+                        m = re.search(r"/([^/]+)_live", p.get("url", ""))
+                        if m:
+                            device_id = m.group(1)
+                            break
                 cameras.append({
                     "id": name,
                     "name": name.replace("_", " ").title(),

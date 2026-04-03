@@ -117,7 +117,14 @@ cp config/go2rtc.yaml.example config/go2rtc.yaml
 **3. Start the stack**
 
 ```bash
+# Minimum (events + device status only):
 docker compose up -d
+
+# With live streaming:
+docker compose --profile streaming up -d
+
+# With live streaming + local recording:
+docker compose --profile full up -d
 ```
 
 **4. Open the web UI and log in**
@@ -254,25 +261,60 @@ data/videos/
 
 ---
 
+## Optional Services (Profiles)
+
+`go2rtc` (live streaming) and `recorder` (clip recording) are optional. Start only what you need:
+
+| Command | Services started |
+|---|---|
+| `docker compose up -d` | mosquitto, ring-mqtt, webapp |
+| `docker compose --profile streaming up -d` | + go2rtc |
+| `docker compose --profile recording up -d` | + recorder |
+| `docker compose --profile full up -d` | all five services |
+
+---
+
 ## Using an Existing MQTT Broker
 
 If you already run a Mosquitto instance (e.g. as part of Home Assistant or another smart-home stack), you can point all services at it instead of starting the bundled one.
 
 **1. Remove the `mosquitto` service from `docker-compose.yml`**
 
-Delete or comment out the entire `mosquitto:` block.
+Delete or comment out the entire `mosquitto:` block and remove `mosquitto` from every `depends_on`.
 
-**2. Update every service that references the broker**
+**2. Update ring-mqtt's config to point at your broker**
+
+ring-mqtt in Docker mode reads its MQTT connection from `data/ring-mqtt/config.json`, not from environment variables. Edit the file directly:
+
+```json
+{
+  "mqtt_url": "mqtt://192.168.1.100:1883",
+  "ring_token": "..."
+}
+```
+
+For authenticated brokers:
+
+```json
+{
+  "mqtt_url": "mqtt://myuser:mypassword@192.168.1.100:1883",
+  "ring_token": "..."
+}
+```
+
+For TLS (port 8883):
+
+```json
+{
+  "mqtt_url": "mqtts://192.168.1.100:8883",
+  "ring_token": "..."
+}
+```
+
+**3. Update webapp and recorder environment variables**
 
 ```yaml
 # docker-compose.yml
-
-  ring-mqtt:
-    environment:
-      - MQTTHOST=192.168.1.100      # ← your broker IP or hostname
-      - MQTTPORT=1883
-      - MQTTUSER=myuser             # ← leave empty if no auth
-      - MQTTPASSWORD=mypassword
 
   webapp:
     environment:
@@ -285,10 +327,9 @@ Delete or comment out the entire `mosquitto:` block.
       - MQTT_PORT=1883
 ```
 
-**3. Allow the `ring/#` topic on your broker**
+**4. Allow the `ring/#` topic on your broker**
 
-ring-mqtt publishes and subscribes to the `ring/#` topic tree.
-Make sure your broker's ACL permits this for the user above, or allows anonymous access from the Docker network.
+ring-mqtt publishes and subscribes to the `ring/#` topic tree. Make sure your broker's ACL permits this for your user, or allows anonymous access from the Docker network.
 
 Example ACL entry for Mosquitto:
 
@@ -297,13 +338,11 @@ user myuser
 topic readwrite ring/#
 ```
 
-**4. Remove the `mosquitto/` data volume lines** from any services that still reference it, then restart:
+**5. Restart**
 
 ```bash
 docker compose up -d
 ```
-
-> **Note:** The bundled Mosquitto is intentionally minimal (no auth, local only). If your existing broker requires TLS, set `MQTTPORT=8883` and ensure the ring-mqtt container can reach it. ring-mqtt supports TLS automatically when the port is 8883.
 
 ---
 
@@ -443,6 +482,16 @@ docker compose restart mosquitto
    # then trigger a motion event or press the doorbell
    ```
 3. **Check the webapp WebSocket** — open the browser dev tools Network tab and look for the `/ws/events` WebSocket connection. It should show `OPEN`.
+
+---
+
+### Battery level and WiFi signal not showing on camera cards
+
+**Symptom:** Camera cards appear in the dashboard but the battery and WiFi indicators are missing.
+
+**Cause (pre-1.2.2):** `device_id` was extracted from go2rtc's active `producers` list, which is only populated while someone is actively streaming. On a fresh page load with no active stream, `producers` was empty and `device_id` was `null` for every camera.
+
+**Fix:** Update to v1.2.2 or later. If running an older version, ensure your cameras have published at least one MQTT `info/state` message and that a stream was started at least once to warm up the producers list.
 
 ---
 

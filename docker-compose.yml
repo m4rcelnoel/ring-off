@@ -9,21 +9,12 @@ services:
     volumes:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./data/mosquitto:/mosquitto/data
-
-  go2rtc:
-    image: alexxit/go2rtc
-    container_name: ring-go2rtc
-    restart: unless-stopped
-    ports:
-      - "1984:1984"   # web UI + API
-      - "8555:8555"   # re-stream RTSP
-    volumes:
-      - ./config/go2rtc.yaml:/config/go2rtc.yaml:ro
-    environment:
-      - RTSP_USER=${RTSP_USER}
-      - RTSP_PASS=${RTSP_PASS}
-    depends_on:
-      - ring-mqtt
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1883 -t '$$SYS/#' -C 1 -i healthcheck --quiet 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   ring-mqtt:
     image: tsightler/ring-mqtt
@@ -37,11 +28,35 @@ services:
       - ./data/ring-mqtt:/data
       - ./config/ring-mqtt-init.sh:/ring-mqtt-init.sh:ro
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
     logging:
       options:
         max-size: 10m
         max-file: "3"
+
+  go2rtc:
+    image: alexxit/go2rtc
+    container_name: ring-go2rtc
+    restart: unless-stopped
+    profiles: ["streaming", "full"]
+    ports:
+      - "1984:1984"   # web UI + API
+      - "8555:8555"   # re-stream RTSP
+    volumes:
+      - ./config/go2rtc.yaml:/config/go2rtc.yaml:ro
+    environment:
+      - RTSP_USER=${RTSP_USER}
+      - RTSP_PASS=${RTSP_PASS}
+    depends_on:
+      ring-mqtt:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:1984/api/ 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   webapp:
     build: ./webapp
@@ -70,14 +85,19 @@ services:
       - RTSP_PASS=${RTSP_PASS}
       - VIDEO_PATH=/videos
     depends_on:
-      - mosquitto
-      - ring-mqtt
-      - go2rtc
+      mosquitto:
+        condition: service_healthy
+      ring-mqtt:
+        condition: service_started
+      go2rtc:
+        condition: service_healthy
+        required: false
 
   recorder:
     build: ./recorder
     container_name: ring-recorder
     restart: unless-stopped
+    profiles: ["recording", "full"]
     volumes:
       - ./data/videos:/videos
       - ./data/webapp:/app/data:ro
@@ -91,5 +111,7 @@ services:
       - VIDEO_PATH=/videos
       - SETTINGS_FILE=/app/data/settings.json
     depends_on:
-      - mosquitto
-      - ring-mqtt
+      mosquitto:
+        condition: service_healthy
+      ring-mqtt:
+        condition: service_started
