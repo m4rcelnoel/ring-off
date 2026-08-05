@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Maximize2, Play, VideoOff, BatteryLow, Wifi } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useVideoRtc } from '@/hooks/useVideoRtc'
@@ -28,16 +28,28 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
 }) {
   const rtcReady = useVideoRtc()
   const [mode, setMode] = useState<'webrtc' | 'mjpeg'>(initialMode)
+  const playerRef = useRef<HTMLElement | null>(null)
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${proto}//${location.host}/ws/video?src=${streamName}`
+
+  // `src` must be assigned as a *property*, not a JSX attribute. VideoRTC starts
+  // the connection from its `set src()` accessor and defines no
+  // attributeChangedCallback, while React 18 writes unknown custom-element props
+  // as attributes — so the setter never ran, wsURL stayed undefined, and
+  // onconnect() returned early every time, leaving the player permanently black.
+  useEffect(() => {
+    const el = playerRef.current as (HTMLElement & { src?: string }) | null
+    if (el) el.src = wsUrl
+  }, [wsUrl, rtcReady, mode])
 
   if (mode === 'webrtc' && rtcReady) {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${proto}//${location.host}/ws/video?src=${streamName}`
     return (
       <div className="relative w-full h-full">
         {/* eslint-disable-next-line @typescript-eslint/ban-ts-comment */}
         {/* @ts-ignore */}
         <video-rtc
-          src={wsUrl}
+          ref={playerRef}
           style={{ width: '100%', height: '100%', display: 'block' }}
         />
         <button
