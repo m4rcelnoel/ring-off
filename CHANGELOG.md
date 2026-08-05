@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.6] - 2026-08-05
+## [1.3.0] - 2026-08-05
+
+### Upgrading
+
+**Update `docker-compose.yml` — new images alone are not enough.** Three changes live there, and skipping them leaves live video broken:
+
+- go2rtc now mounts the `config` **directory** (`./config:/config:ro`) instead of the single `go2rtc.yaml` file, so a missing file no longer makes Docker create a directory in its place
+- port 8555 is published as **both TCP and UDP** for WebRTC; only TCP was mapped before
+- `RTSP_USER` / `RTSP_PASS` are gone from the service environments
+
+```bash
+git pull && docker compose up -d
+```
+
+**Delete `rtsp: listen: ':8555'` from `config/go2rtc.yaml` if it is there.** That line came from the old example, collides with go2rtc's WebRTC port and stops the WebRTC TCP listener from binding. Existing files are not rewritten automatically. Confirm with `docker compose logs go2rtc`, which should show both a `[webrtc] listen tcp` and a `[webrtc] listen udp` line.
+
+`.env` is no longer read and can be deleted. Stream URLs holding `${RTSP_USER}` placeholders are repaired on start, and installs that already work skip the new setup wizard.
 
 ### Added
 - **Guided setup wizard** — first run is now a walkthrough at `:8080` instead of a README checklist across two ports. It checks the services it depends on (naming the fix for each failure, and treating go2rtc and the recordings folder as optional), takes the Ring sign-in including 2FA, shows devices arriving over MQTT live, and lets each camera be named and switched on or off. Installs that were already working are adopted on startup so upgrading users are not sent back through onboarding; "Run setup again" in Settings replaces the old "Re-authenticate with Ring" button, which was wired to a flag nothing read and did nothing when clicked.

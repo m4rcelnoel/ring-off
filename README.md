@@ -429,7 +429,7 @@ docker compose restart mosquitto
 
 **Cause:** ring-mqtt refuses to start without a config file, and on a fresh deployment the `data/ring-mqtt/` volume is empty. The token setup UI on `:55123` — which is what would create that file — cannot come up either, because the container dies first.
 
-**Fix:** Update to 1.2.6 or later, where `config/ring-mqtt-init.sh` writes a complete default config before ring-mqtt starts. On older versions, create `data/ring-mqtt/config.json` by hand with at least `{"mqtt_url": "mqtt://mosquitto:1883", "ring_topic": "ring", "enable_cameras": true}` and restart.
+**Fix:** Update to 1.3.0 or later, where `config/ring-mqtt-init.sh` writes a complete default config before ring-mqtt starts. On older versions, create `data/ring-mqtt/config.json` by hand with at least `{"mqtt_url": "mqtt://mosquitto:1883", "ring_topic": "ring", "enable_cameras": true}` and restart.
 
 ---
 
@@ -441,7 +441,7 @@ docker compose restart mosquitto
 
 **Fix:** Sign in through the Ring Off web UI at `:8080`. It performs the OAuth exchange (including 2FA), writes the refresh token to `data/ring-mqtt/ring-state.json`, and restarts ring-mqtt for you. The ring-mqtt setup UI on `:55123` does the same thing and remains available as a fallback.
 
-> The token goes in **`ring-state.json`**, not `config.json` — ring-mqtt reads it from there and `config.json` has no `ring_token` field at all. Before 1.2.6 the web UI login wrote it to the wrong file, so signing in appeared to succeed while ring-mqtt stayed unauthenticated and no cameras ever appeared.
+> The token goes in **`ring-state.json`**, not `config.json` — ring-mqtt reads it from there and `config.json` has no `ring_token` field at all. Before 1.3.0 the web UI login wrote it to the wrong file, so signing in appeared to succeed while ring-mqtt stayed unauthenticated and no cameras ever appeared.
 
 > You only need to do this once. The token is persisted in the `data/ring-mqtt/` volume and survives container restarts.
 
@@ -475,7 +475,7 @@ docker compose restart mosquitto
    ```bash
    docker compose logs go2rtc | grep -i "error\|rtsp"
    ```
-2. **Check the stream URLs in `config/go2rtc.yaml`.** They must match whatever `livestream_user` / `livestream_pass` are in `data/ring-mqtt/config.json` (no credentials at all if those keys are absent). Ring Off rewrites them automatically on start and whenever the dashboard loads — if you see literal `${RTSP_USER}` placeholders, you are on a version older than 1.2.6.
+2. **Check the stream URLs in `config/go2rtc.yaml`.** They must match whatever `livestream_user` / `livestream_pass` are in `data/ring-mqtt/config.json` (no credentials at all if those keys are absent). Ring Off rewrites them automatically on start and whenever the dashboard loads — if you see literal `${RTSP_USER}` placeholders, you are on a version older than 1.3.0.
 
    > **Upgrading from ≤ 1.2.5:** those placeholders came from `.env`, and your Ring account email/password were never the right credentials — an unescaped `@` also made the URL unparseable. Ring Off now repairs existing entries on start, and `.env` is no longer used.
 3. **Check go2rtc.yaml has the correct device IDs.** Run the MQTT subscriber above to find your device IDs, then compare with `config/go2rtc.yaml`.
@@ -485,7 +485,7 @@ docker compose restart mosquitto
    [webrtc] listen tcp addr=[::]:8555
    [webrtc] listen udp addr=...:8555
    ```
-   If the TCP line is missing, something else in `config/go2rtc.yaml` has taken port 8555 — most often a leftover `rtsp: listen: ':8555'` from a pre-1.2.6 config. Remove it; go2rtc's RTSP server does not need to be reachable and its default port is fine.
+   If the TCP line is missing, something else in `config/go2rtc.yaml` has taken port 8555 — most often a leftover `rtsp: listen: ':8555'` from a pre-1.3.0 config. Remove it; go2rtc's RTSP server does not need to be reachable and its default port is fine.
 6. **Try the MJPEG fallback** — click the "MJPEG" button on the camera card. If MJPEG works but WebRTC does not, the issue is WebRTC negotiation (often a network/NAT problem between browser and server, or port 8555 not reachable).
 
    > MJPEG is transcoded by the webapp with ffmpeg. The Docker image ships it; if you are running the backend directly on your machine for development and ffmpeg is not installed, `/stream/<name>` returns an empty `200` and the fallback shows nothing.
