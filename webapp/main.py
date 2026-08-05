@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import os
+import socket
 import re
 import secrets
 import threading
@@ -81,6 +82,7 @@ app_sessions: set[str]     = set()  # active session tokens
 _loop: asyncio.AbstractEventLoop | None = None
 _low_battery_notified: set[str] = set()  # device_ids already alerted for low battery
 _device_availability: dict[str, str] = {}  # device_id → "online"/"offline"
+_mqtt_connected: bool = False
 
 # ── Persistence helpers ───────────────────────────────────────────────────────
 
@@ -98,6 +100,7 @@ SETTINGS_DEFAULTS: dict = {
     "low_battery_threshold":     20,
     "notify_on_connection_lost": True,
     "app_password_hash":         "",
+    "setup_complete":            False,
 }
 
 
@@ -451,8 +454,14 @@ def setup_mqtt() -> mqtt.Client:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
     def on_connect(client, userdata, flags, reason_code, properties):
+        global _mqtt_connected
+        _mqtt_connected = True
         print(f"MQTT connected (rc={reason_code})")
         client.subscribe("ring/#")
+
+    def on_disconnect(client, userdata, flags, reason_code, properties):
+        global _mqtt_connected
+        _mqtt_connected = False
 
     def on_message(client, userdata, msg):
         global _loop
@@ -578,6 +587,7 @@ def setup_mqtt() -> mqtt.Client:
             print(f"MQTT message error: {e}")
 
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.on_message = on_message
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
@@ -588,7 +598,8 @@ def setup_mqtt() -> mqtt.Client:
 
 # ── Auth middleware ───────────────────────────────────────────────────────────
 
-_UNPROTECTED_PATHS = {"/api/app/status", "/api/app/login", "/api/status"}
+_UNPROTECTED_PATHS = {"/api/app/status", "/api/app/login", "/api/status",
+                      "/api/setup/state"}
 _PROTECTED_PREFIXES = ("/api/", "/ws/", "/stream/", "/recordings/")
 
 
@@ -621,6 +632,7 @@ async def lifespan(app: FastAPI):
     _loop = asyncio.get_event_loop()
     ensure_go2rtc_config()
     sync_go2rtc_credentials()
+    adopt_existing_install()
     app.state.mqtt = setup_mqtt()
     yield
     app.state.mqtt.loop_stop()
@@ -720,6 +732,137 @@ async def get_status():
         "ring_configured": ring_token_present(),
         "ha_configured": bool(cfg.get("ha_url") and cfg.get("ha_token")),
     }
+
+# ── Guided setup ──────────────────────────────────────────────────────────────
+
+def _tcp_open(host: str, port: str | int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".ring-off-write-test"
+        probe.write_text("")
+        probe.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def setup_is_complete() -> bool:
+    return bool(load_settings().get("setup_complete"))
+
+
+def adopt_existing_install() -> None:
+    """Mark setup done for deployments that were configured before the wizard.
+
+    Without this, upgrading users would be sent back through onboarding for an
+    install that already works.
+    """
+    settings = load_settings()
+    if not settings.get("setup_complete") and ring_token_present():
+        settings["setup_complete"] = True
+        save_settings(settings)
+        print("Existing Ring configuration detected — skipping guided setup")
+
+
+@app.get("/api/setup/state")
+async def setup_state():
+    cameras = [d for d in device_states.values() if d.get("type") == "camera"]
+    return {
+        "complete":           setup_is_complete(),
+        "ring_authenticated": ring_token_present(),
+        "app_password_set":   bool(load_settings().get("app_password_hash")),
+        "cameras_found":      len(cameras),
+    }
+
+
+@app.get("/api/setup/preflight")
+async def setup_preflight():
+    """Health of everything onboarding depends on, with a fix for each failure."""
+    checks: list[dict] = []
+
+    def add(key: str, label: str, ok: bool, hint: str, required: bool = True) -> None:
+        checks.append({"key": key, "label": label, "ok": ok,
+                       "required": required, "hint": None if ok else hint})
+
+    mqtt_ok = _mqtt_connected or await asyncio.to_thread(_tcp_open, MQTT_HOST, MQTT_PORT)
+    add("mqtt", "MQTT broker", mqtt_ok,
+        f"No broker at {MQTT_HOST}:{MQTT_PORT}. Run `docker compose ps mosquitto` "
+        f"— without it no events or devices arrive.")
+
+    add("ring_mqtt", "ring-mqtt bridge",
+        await asyncio.to_thread(_tcp_open, RTSP_HOST, RTSP_PORT),
+        "ring-mqtt is not answering. It shuts down on startup when "
+        "data/ring-mqtt/config.json is missing — check `docker compose logs ring-mqtt`.")
+
+    go2rtc_ok = False
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            go2rtc_ok = (await client.get(f"{GO2RTC_URL}/api/streams")).status_code < 400
+    except Exception:
+        pass
+    add("go2rtc", "go2rtc streaming", go2rtc_ok,
+        f"No response from {GO2RTC_URL}. Everything else works; live video will not.",
+        required=False)
+
+    add("config", "Camera config writable", _writable(GO2RTC_CONFIG.parent),
+        f"Cannot write to {GO2RTC_CONFIG.parent}. Cameras cannot be added automatically.")
+
+    add("videos", "Recordings folder writable", _writable(VIDEO_PATH),
+        f"Cannot write to {VIDEO_PATH}. Event clips cannot be saved.", required=False)
+
+    return {
+        "ok": all(c["ok"] for c in checks if c["required"]),
+        "checks": checks,
+    }
+
+
+@app.get("/api/setup/discovered")
+async def setup_discovered():
+    """Devices seen on MQTT so far, for live progress during onboarding."""
+    cameras, chimes = [], []
+    for device_id, state in device_states.items():
+        entry = {
+            "device_id":     device_id,
+            "name":          f"Camera {device_id[-6:].upper()}",
+            "battery_level": state.get("battery_level"),
+            "wifi_signal":   state.get("wifi_signal"),
+            "has_snapshot":  device_id in snapshots,
+        }
+        if state.get("type") == "camera":
+            cameras.append(entry)
+        else:
+            entry["name"] = f"Chime {device_id[-4:].upper()}"
+            chimes.append(entry)
+    return {
+        "ring_authenticated": ring_token_present(),
+        "mqtt_connected":     _mqtt_connected,
+        "cameras":            cameras,
+        "chimes":             chimes,
+    }
+
+
+@app.post("/api/setup/complete")
+async def setup_finish():
+    settings = load_settings()
+    settings["setup_complete"] = True
+    save_settings(settings)
+    return {"success": True}
+
+
+@app.post("/api/setup/reset")
+async def setup_reset():
+    """Re-run the wizard from the settings sheet."""
+    settings = load_settings()
+    settings["setup_complete"] = False
+    save_settings(settings)
+    return {"success": True}
 
 # ── Ring auth ─────────────────────────────────────────────────────────────────
 

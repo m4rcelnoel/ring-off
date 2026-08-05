@@ -13,10 +13,9 @@ import type { Settings } from '@/types'
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onRelogin: () => void
 }
 
-export default function SettingsSheet({ open, onOpenChange, onRelogin }: Props) {
+export default function SettingsSheet({ open, onOpenChange }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [haUrl, setHaUrl] = useState('')
   const [haToken, setHaToken] = useState('')
@@ -62,6 +61,11 @@ export default function SettingsSheet({ open, onOpenChange, onRelogin }: Props) 
     }
   }
 
+  async function rerunSetup() {
+    await api.post('/api/setup/reset', {})
+    location.reload()   // App re-reads /api/setup/state and shows the wizard
+  }
+
   async function savePassword() {
     setPwSaving(true)
     try {
@@ -97,9 +101,12 @@ export default function SettingsSheet({ open, onOpenChange, onRelogin }: Props) 
               </div>
               <Badge variant="success">Connected</Badge>
             </div>
-            <Button variant="outline" size="sm" className="w-full" onClick={() => { onOpenChange(false); onRelogin() }}>
-              Re-authenticate with Ring
+            <Button variant="outline" size="sm" className="w-full" onClick={rerunSetup}>
+              Run setup again
             </Button>
+            <p className="text-xs text-muted-foreground">
+              Re-checks your services, lets you sign in to Ring again, and re-scans for devices.
+            </p>
           </div>
 
           <Separator />

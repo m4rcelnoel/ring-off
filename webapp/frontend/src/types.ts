@@ -68,3 +68,38 @@ export interface AppStatus {
   auth_required: boolean
   authenticated: boolean
 }
+
+export interface SetupState {
+  complete: boolean
+  ring_authenticated: boolean
+  app_password_set: boolean
+  cameras_found: number
+}
+
+export interface PreflightCheck {
+  key: string
+  label: string
+  ok: boolean
+  required: boolean
+  hint: string | null
+}
+
+export interface Preflight {
+  ok: boolean
+  checks: PreflightCheck[]
+}
+
+export interface DiscoveredDevice {
+  device_id: string
+  name: string
+  battery_level?: number | null
+  wifi_signal?: number | null
+  has_snapshot: boolean
+}
+
+export interface Discovered {
+  ring_authenticated: boolean
+  mqtt_connected: boolean
+  cameras: DiscoveredDevice[]
+  chimes: DiscoveredDevice[]
+}

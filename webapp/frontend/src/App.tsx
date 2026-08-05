@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import type { AppStatus, Status } from '@/types'
+import type { AppStatus, SetupState } from '@/types'
 import AppLogin from '@/components/AppLogin'
-import LoginScreen from '@/components/LoginScreen'
+import SetupWizard from '@/components/SetupWizard'
 import Dashboard from '@/components/Dashboard'
 
 export default function App() {
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null)
-  const [status, setStatus] = useState<Status | null>(null)
+  const [setup, setSetup] = useState<SetupState | null>(null)
 
   useEffect(() => {
     api.get<AppStatus>('/api/app/status')
@@ -17,7 +17,7 @@ export default function App() {
 
   useEffect(() => {
     if (!appStatus?.authenticated) return
-    api.get<Status>('/api/status').then(setStatus).catch(console.error)
+    api.get<SetupState>('/api/setup/state').then(setSetup).catch(console.error)
   }, [appStatus?.authenticated])
 
   // Waiting for initial auth check
@@ -32,14 +32,17 @@ export default function App() {
     )
   }
 
-  // Waiting for Ring config status
-  if (!status) return null
+  // Waiting for setup status
+  if (!setup) return null
 
-  // Ring not configured — show login
-  if (!status.ring_configured) {
+  // First run, or the user asked to run setup again. Installs that were already
+  // working before the wizard existed are adopted on startup, so they land
+  // straight on the dashboard.
+  if (!setup.complete) {
     return (
-      <LoginScreen
-        onSuccess={() => setStatus({ ...status, ring_configured: true })}
+      <SetupWizard
+        ringAlreadyAuthenticated={setup.ring_authenticated}
+        onFinished={() => setSetup({ ...setup, complete: true })}
       />
     )
   }

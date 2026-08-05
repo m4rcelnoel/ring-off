@@ -22,7 +22,6 @@ export default function Dashboard() {
   const [cameras, setCameras] = useState<Camera[]>([])
   const [loadingCams, setLoadingCams] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [showLogin, setShowLogin] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [expandedCamera, setExpandedCamera] = useState<Camera | null>(null)
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('events')
@@ -236,7 +235,6 @@ export default function Dashboard() {
       <SettingsSheet
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        onRelogin={() => setShowLogin(true)}
       />
     </div>
   )
