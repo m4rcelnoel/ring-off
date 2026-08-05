@@ -213,8 +213,31 @@ async def broadcast(message: dict) -> None:
 
 # ── Push notifications ────────────────────────────────────────────────────────
 
+async def post_notification(url: str, title: str, body: str) -> tuple[bool, str]:
+    """Deliver one notification, reporting what actually happened.
+
+    Gotify is detected by its /message path; anything else is treated as ntfy.
+    Returns (ok, detail) so callers can surface a real HTTP status instead of
+    failing silently into the log.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            if "/message" in url:
+                resp = await client.post(
+                    url, json={"title": title, "message": body, "priority": 5})
+            else:
+                resp = await client.post(
+                    url, headers={"Title": title}, content=body.encode())
+    except Exception as e:
+        return False, f"Could not reach {url.split('/')[2] if '//' in url else url}: {e}"
+
+    if resp.status_code < 300:
+        return True, f"HTTP {resp.status_code}"
+    return False, f"HTTP {resp.status_code} — {resp.text[:200]}"
+
+
 async def send_notification(event: dict) -> None:
-    """Send push notification for motion/ding events via ntfy.sh / Gotify / Pushover."""
+    """Send push notification for motion/ding events via ntfy.sh / Gotify."""
     settings = load_settings()
     notify_url = settings.get("notify_url", "").strip()
     if not notify_url:
@@ -235,36 +258,19 @@ async def send_notification(event: dict) -> None:
         title = "Doorbell"
         body = f"Doorbell rang at camera {device_id}"
 
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            # ntfy.sh: POST with Title header and plain-text body
-            # Gotify: POST /message?token=TOKEN with JSON
-            # Detect Gotify by /message path; otherwise use ntfy format
-            if "/message" in notify_url:
-                await client.post(notify_url, json={"title": title, "message": body, "priority": 5})
-            else:
-                await client.post(
-                    notify_url,
-                    headers={"Title": title},
-                    content=body.encode(),
-                )
-    except Exception as e:
-        print(f"Notification error: {e}")
+    ok, detail = await post_notification(notify_url, title, body)
+    if not ok:
+        print(f"Notification failed: {detail}")
+
 
 async def send_device_alert(title: str, body: str) -> None:
     """Send a push notification for device-health events (low battery, connection lost)."""
-    settings = load_settings()
-    notify_url = settings.get("notify_url", "").strip()
+    notify_url = load_settings().get("notify_url", "").strip()
     if not notify_url:
         return
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            if "/message" in notify_url:
-                await client.post(notify_url, json={"title": title, "message": body, "priority": 5})
-            else:
-                await client.post(notify_url, headers={"Title": title}, content=body.encode())
-    except Exception as e:
-        print(f"Device alert error: {e}")
+    ok, detail = await post_notification(notify_url, title, body)
+    if not ok:
+        print(f"Device alert failed: {detail}")
 
 # ── RTSP credentials / URLs ───────────────────────────────────────────────────
 
@@ -783,6 +789,9 @@ class SettingsRequest(BaseModel):
     low_battery_threshold: int = 20
     notify_on_connection_lost: bool = True
 
+class TestNotificationRequest(BaseModel):
+    notify_url: str = ""
+
 class CameraSelection(BaseModel):
     device_id: str
     name: str = ""
@@ -1018,6 +1027,17 @@ async def setup_discovered():
         "cameras":            cameras,
         "chimes":             chimes,
     }
+
+
+@app.post("/api/setup/test-notification")
+async def setup_test_notification(req: TestNotificationRequest):
+    """Prove the notification URL works before relying on it for a real event."""
+    url = (req.notify_url or load_settings().get("notify_url", "")).strip()
+    if not url:
+        raise HTTPException(400, "Enter a notification URL first")
+    ok, detail = await post_notification(
+        url, "Ring Off", "Test notification — alerts are working.")
+    return {"ok": ok, "detail": detail}
 
 
 @app.post("/api/setup/complete")

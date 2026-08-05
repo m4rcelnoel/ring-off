@@ -178,3 +178,96 @@ def test_adoption_only_happens_once(app):
     get(app.setup_reset())
     app.adopt_existing_install()
     assert get(app.setup_state())["complete"] is False
+
+
+# ── Test notifications ────────────────────────────────────────────────────────
+
+def test_a_missing_url_is_rejected(app):
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as err:
+        get(app.setup_test_notification(app.TestNotificationRequest()))
+    assert err.value.status_code == 400
+
+
+def test_a_successful_test_reports_ok(app, monkeypatch):
+    async def fake(url, title, body):
+        return True, "HTTP 200"
+    monkeypatch.setattr(app, "post_notification", fake)
+    result = get(app.setup_test_notification(
+        app.TestNotificationRequest(notify_url="https://ntfy.sh/topic")))
+    assert result == {"ok": True, "detail": "HTTP 200"}
+
+
+def test_a_failing_test_surfaces_the_reason(app, monkeypatch):
+    """A wrong URL used to fail silently into the log."""
+    async def fake(url, title, body):
+        return False, "HTTP 404 — topic not found"
+    monkeypatch.setattr(app, "post_notification", fake)
+    result = get(app.setup_test_notification(
+        app.TestNotificationRequest(notify_url="https://ntfy.sh/nope")))
+    assert result["ok"] is False
+    assert "404" in result["detail"]
+
+
+def test_the_saved_url_is_used_when_none_is_supplied(app, monkeypatch):
+    settings = app.load_settings()
+    settings["notify_url"] = "https://ntfy.sh/saved"
+    app.save_settings(settings)
+
+    seen = {}
+    async def fake(url, title, body):
+        seen["url"] = url
+        return True, "HTTP 200"
+    monkeypatch.setattr(app, "post_notification", fake)
+
+    get(app.setup_test_notification(app.TestNotificationRequest()))
+    assert seen["url"] == "https://ntfy.sh/saved"
+
+
+def test_gotify_and_ntfy_use_different_shapes(app, monkeypatch):
+    sent = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kwargs):
+            sent.append(kwargs)
+            return Response()
+
+    monkeypatch.setattr(app.httpx, "AsyncClient", lambda **kw: Client())
+
+    get(app.post_notification("https://gotify.host/message?token=x", "T", "B"))
+    assert "json" in sent[-1]
+
+    get(app.post_notification("https://ntfy.sh/topic", "T", "B"))
+    assert sent[-1]["headers"]["Title"] == "T"
+
+
+def test_an_unreachable_host_is_reported_not_raised(app, monkeypatch):
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kwargs): raise OSError("name resolution failed")
+
+    monkeypatch.setattr(app.httpx, "AsyncClient", lambda **kw: Client())
+    ok, detail = get(app.post_notification("https://ntfy.example/topic", "T", "B"))
+    assert ok is False and "name resolution failed" in detail
+
+
+def test_setting_a_password_would_lock_setup_completion(app):
+    """The wizard sets the dashboard password on its final screen. Without
+    logging straight back in, the very next request is blocked by the password
+    just set and setup could never be marked complete."""
+    from fastapi.testclient import TestClient
+    session = TestClient(app.app)
+
+    session.post("/api/app/set-password", json={"password": "hunter2"})
+    assert session.post("/api/setup/complete", json={}).status_code == 401
+
+    session.post("/api/app/login", json={"password": "hunter2"})
+    assert session.post("/api/setup/complete", json={}).status_code == 200

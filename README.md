@@ -122,7 +122,8 @@ Navigate to **http://\<your-server-ip\>:8080**. The wizard walks you through it:
 2. **Ring account** — your email and password, plus a 2FA code if your account uses one
 3. **Devices** — cameras and chimes appear here as ring-mqtt announces them
 4. **Cameras** — name each one ("Front Door" rather than `Camera 169F41`) and switch off any you do not want
-5. **Finish**
+5. **Alerts** — optional clip recording and push notifications, with a button that sends a test and reports what actually happened
+6. **Finish** — optionally set a dashboard password
 
 The refresh token is saved to `data/ring-mqtt/ring-state.json` and ring-mqtt reconnects automatically. You only need to do this once; the token persists across restarts.
 
