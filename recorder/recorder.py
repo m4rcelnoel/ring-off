@@ -12,6 +12,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import paho.mqtt.client as mqtt
 
@@ -27,7 +28,11 @@ SETTINGS_FILE   = Path(os.getenv("SETTINGS_FILE", "/app/data/settings.json"))
 
 
 def rtsp_credentials() -> tuple[str, str]:
-    """Read livestream credentials from ring-mqtt config (preferred) or env vars."""
+    """Read livestream credentials from ring-mqtt config (preferred) or env vars.
+
+    ring-mqtt owns these credentials and runs its RTSP server unauthenticated
+    when they are unset — they are not the Ring account login.
+    """
     if RING_MQTT_CONFIG.exists():
         try:
             cfg = json.loads(RING_MQTT_CONFIG.read_text())
@@ -61,8 +66,14 @@ def load_settings() -> dict:
 
 
 def rtsp_url(device_id: str) -> str:
+    """Build the RTSP URL, percent-encoding the credentials.
+
+    An unescaped '@' (as in an email address) or ':' in the userinfo yields a
+    URL ffmpeg cannot parse.
+    """
     user, passwd = rtsp_credentials()
-    return f"rtsp://{user}:{passwd}@{RTSP_HOST}:{RTSP_PORT}/{device_id}_live"
+    userinfo = f"{quote(user, safe='')}:{quote(passwd, safe='')}@" if user or passwd else ""
+    return f"rtsp://{userinfo}{RTSP_HOST}:{RTSP_PORT}/{device_id}_live"
 
 
 def record(device_id: str, kind: str) -> None:

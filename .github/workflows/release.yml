@@ -36,7 +36,6 @@ jobs:
           dir="ring-off-v${version}"
           mkdir -p "${dir}/config"
           cp docker-compose.yml "${dir}/"
-          cp .env.example       "${dir}/"
           cp config/mosquitto.conf       "${dir}/config/"
           cp config/go2rtc.yaml.example  "${dir}/config/"
           cp config/ring-mqtt-init.sh    "${dir}/config/"

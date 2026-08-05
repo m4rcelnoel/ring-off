@@ -1,12 +1,42 @@
 #!/bin/sh
-# Patch ring-mqtt config.json with required defaults if any fields are missing.
-# This is needed because ring-mqtt's first-run token setup (port 55123) writes
-# a minimal config containing only ring_token, omitting mqtt_url and other fields
-# which causes "Invalid URL" errors and MQTT broker connection failures.
+# Ensure /data/config.json exists and contains every field ring-mqtt requires.
+#
+# Two separate problems are handled here:
+#
+#  1. ring-mqtt (Docker mode) refuses to start at all when config.json is
+#     missing — "No configuration file found at /data/config.json", followed by
+#     an immediate shutdown. On a fresh deployment the data volume is empty, so
+#     the container crash-loops and the token setup UI on :55123 never comes up,
+#     leaving no way to create the file it is demanding.
+#
+#  2. That token setup UI writes a minimal config containing only ring_token,
+#     omitting mqtt_url and friends, which then causes "Invalid URL" errors and
+#     MQTT broker connection failures.
+#
+# Creating a complete config without a token is safe: ring-mqtt starts, reports
+# that no refresh token was found, and serves the setup UI on :55123.
 
 CONFIG=/data/config.json
 
-if [ -f "$CONFIG" ] && ! grep -q '"mqtt_url"' "$CONFIG"; then
+if [ ! -f "$CONFIG" ]; then
+  mkdir -p /data
+  cat > "$CONFIG" <<'EOF'
+{
+  "mqtt_url": "mqtt://mosquitto:1883",
+  "mqtt_options": "",
+  "livestream_user": "",
+  "livestream_pass": "",
+  "disarm_code": "",
+  "enable_cameras": true,
+  "enable_modes": false,
+  "enable_panic": false,
+  "hass_topic": "homeassistant/status",
+  "ring_topic": "ring",
+  "location_ids": []
+}
+EOF
+  echo "ring-mqtt-init: created default config.json (no Ring token yet)"
+elif ! grep -q '"mqtt_url"' "$CONFIG"; then
   node -e "
 const fs = require('fs');
 const data = JSON.parse(fs.readFileSync('$CONFIG', 'utf8'));

@@ -1,22 +1,29 @@
 api:
   listen: ':1984'
 
-rtsp:
+# WebRTC media port, published as both TCP and UDP by docker-compose.yml.
+# Do not set `rtsp: listen: ':8555'` here — it collides with this port, leaving
+# go2rtc without a WebRTC TCP listener and browsers with a black player.
+webrtc:
   listen: ':8555'
 
 # ── Streams ───────────────────────────────────────────────────────────────────
-# One entry per Ring camera. The name on the left becomes the label in the UI.
+# You do not normally need to touch this file.
 #
-# How to find your device IDs:
+# Ring Off creates config/go2rtc.yaml on first start and adds one entry per
+# camera as it is discovered via MQTT, using the RTSP credentials that ring-mqtt
+# generates for its own internal RTSP server. Those credentials are read from
+# data/ring-mqtt/config.json — they are NOT your Ring account login, and they no
+# longer come from .env.
+#
+# To name a camera yourself, add an entry manually. The name on the left becomes
+# the label in the UI. Find your device IDs with:
 #   docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v -W 10
 # Look for topics like:
 #   ring/<location-id>/camera/<DEVICE_ID>/motion/state
 #
-# Note: if auto-discovery is enabled (default), new cameras are added here
-# automatically when first seen in MQTT — you may not need to edit this at all.
+#   front_door: rtsp://ring-mqtt:8554/DEVICE_ID_live
 #
-# ${RTSP_USER} and ${RTSP_PASS} are substituted from .env automatically.
+# Ring Off keeps the credentials in existing entries up to date automatically.
 
 streams:
-  front_door: rtsp://${RTSP_USER}:${RTSP_PASS}@ring-mqtt:8554/YOUR_DEVICE_ID_live
-  # back_door:  rtsp://${RTSP_USER}:${RTSP_PASS}@ring-mqtt:8554/YOUR_DEVICE_ID_live

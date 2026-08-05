@@ -15,6 +15,7 @@ FastAPI server providing:
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import bcrypt
 import yaml
@@ -42,6 +44,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # ── Config ────────────────────────────────────────────────────────────────────
 
 RING_MQTT_CONFIG  = Path(os.getenv("RING_MQTT_CONFIG",  "/ring-mqtt-data/config.json"))
+# ring-mqtt keeps the Ring refresh token in its state file, not in config.json.
+RING_MQTT_STATE   = Path(os.getenv("RING_MQTT_STATE",
+                                   str(RING_MQTT_CONFIG.parent / "ring-state.json")))
 SETTINGS_FILE     = Path(os.getenv("SETTINGS_FILE",     "/app/data/settings.json"))
 GO2RTC_URL        = os.getenv("GO2RTC_URL",             "http://go2rtc:1984")
 GO2RTC_WS         = os.getenv("GO2RTC_WS_URL",          "ws://go2rtc:1984")
@@ -52,8 +57,15 @@ MQTT_PORT         = int(os.getenv("MQTT_PORT",          "1883"))
 RING_CONTAINER    = os.getenv("RING_CONTAINER",         "ring-mqtt")
 RTSP_HOST         = os.getenv("RTSP_HOST",              "ring-mqtt")
 RTSP_PORT         = os.getenv("RTSP_PORT",              "8554")
-RTSP_USER         = os.getenv("RTSP_USER",              "ringuser")
-RTSP_PASS         = os.getenv("RTSP_PASS",              "ringpass")
+# How go2rtc reaches ring-mqtt's RTSP server. go2rtc always runs in Docker, so
+# this stays a service name even when the backend itself runs on the host for
+# development and needs RTSP_HOST=localhost for its own ffmpeg pulls.
+GO2RTC_RTSP_HOST  = os.getenv("GO2RTC_RTSP_HOST",       "ring-mqtt")
+# ring-mqtt's internal RTSP server runs without authentication unless
+# livestream_user/livestream_pass are set in its own config.json. These env vars
+# are only a fallback for hand-configured setups — see _rtsp_credentials().
+RTSP_USER         = os.getenv("RTSP_USER",              "")
+RTSP_PASS         = os.getenv("RTSP_PASS",              "")
 VIDEO_PATH        = Path(os.getenv("VIDEO_PATH",        "/videos"))
 USER_AGENT        = "ring-off/1.1"
 
@@ -106,10 +118,39 @@ def load_ring_config() -> dict:
     return {}
 
 
+def load_ring_state() -> dict:
+    if RING_MQTT_STATE.exists():
+        try:
+            return json.loads(RING_MQTT_STATE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def ring_token_present() -> bool:
+    """True once ring-mqtt has a refresh token it will actually use."""
+    return bool(load_ring_state().get("ring_token")
+                # Fallback for older ring-mqtt versions that read config.json.
+                or load_ring_config().get("ring_token"))
+
+
 def save_ring_token(refresh_token: str) -> None:
-    cfg = load_ring_config()
-    cfg["ring_token"] = refresh_token
-    RING_MQTT_CONFIG.write_text(json.dumps(cfg, indent=2))
+    """Persist the Ring refresh token where ring-mqtt actually reads it.
+
+    ring-mqtt loads the token from ring-state.json (lib/state.js → lib/ring.js),
+    not from config.json. Writing it to config.json leaves ring-mqtt
+    unauthenticated while the dashboard believes setup succeeded — the login
+    appears to work and no cameras ever appear.
+    """
+    state = load_ring_state()
+    state["ring_token"] = refresh_token
+    # ring-mqtt regenerates these if absent, but writing a complete file keeps
+    # its own schema intact.
+    state.setdefault("systemId", hashlib.sha256(secrets.token_bytes(32)).hexdigest())
+    state.setdefault("devices", {})
+    # In Docker this is a bind mount and always exists; outside it may not.
+    RING_MQTT_STATE.parent.mkdir(parents=True, exist_ok=True)
+    RING_MQTT_STATE.write_text(json.dumps(state))
 
 
 def restart_ring_mqtt() -> None:
@@ -131,6 +172,26 @@ def restart_go2rtc() -> None:
     except Exception as e:
         print(f"Could not restart go2rtc: {e}")
 
+# ── Background task scheduling ────────────────────────────────────────────────
+
+def _log_task_error(future) -> None:
+    try:
+        future.result()
+    except Exception as e:
+        print(f"Background task failed: {e!r}")
+
+
+def schedule(coro) -> None:
+    """Run a coroutine on the main event loop from the MQTT thread.
+
+    Failures are logged instead of vanishing into an unawaited future — an
+    exception in here used to silently disable live event delivery entirely.
+    """
+    if _loop is None:
+        coro.close()
+        return
+    asyncio.run_coroutine_threadsafe(coro, _loop).add_done_callback(_log_task_error)
+
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 
 async def broadcast(message: dict) -> None:
@@ -140,7 +201,9 @@ async def broadcast(message: dict) -> None:
             await ws.send_json(message)
         except Exception:
             dead.add(ws)
-    ws_clients -= dead
+    # difference_update, not `-=`: an augmented assignment would rebind
+    # ws_clients as a function local and raise UnboundLocalError on the loop above.
+    ws_clients.difference_update(dead)
 
 # ── Push notifications ────────────────────────────────────────────────────────
 
@@ -197,6 +260,143 @@ async def send_device_alert(title: str, body: str) -> None:
     except Exception as e:
         print(f"Device alert error: {e}")
 
+# ── RTSP credentials / URLs ───────────────────────────────────────────────────
+
+def _rtsp_credentials() -> tuple[str, str]:
+    """Credentials for ring-mqtt's internal RTSP server.
+
+    ring-mqtt owns these: it stores them as livestream_user/livestream_pass in
+    its own config.json, and runs the RTSP server without authentication when
+    they are unset. RTSP_USER/RTSP_PASS remain only as a fallback for setups
+    that configure ring-mqtt by hand. They are NOT the Ring account login.
+    """
+    cfg = load_ring_config()
+    user   = cfg.get("livestream_user") or RTSP_USER
+    passwd = cfg.get("livestream_pass") or RTSP_PASS
+    return user, passwd
+
+
+def rtsp_url(device_id: str, host: str | None = None) -> str:
+    """Build the RTSP URL for a device, percent-encoding the credentials.
+
+    `host` defaults to RTSP_HOST (how this process reaches ring-mqtt). Pass
+    GO2RTC_RTSP_HOST for URLs written into go2rtc.yaml, which are resolved
+    inside the go2rtc container rather than here.
+
+    Encoding matters: an unescaped '@' (as in an email address) or ':' in the
+    userinfo produces a URL that ffmpeg and go2rtc cannot parse at all.
+    """
+    user, passwd = _rtsp_credentials()
+    userinfo = f"{quote(user, safe='')}:{quote(passwd, safe='')}@" if user or passwd else ""
+    return f"rtsp://{userinfo}{host or RTSP_HOST}:{RTSP_PORT}/{device_id}_live"
+
+# ── go2rtc config ─────────────────────────────────────────────────────────────
+
+# No `rtsp:` override here on purpose. Setting it to :8555 (as earlier versions
+# did) collides with go2rtc's default WebRTC port, so the WebRTC TCP listener
+# never binds and browsers are left with only an unreachable container-IP UDP
+# candidate — a permanently black player. go2rtc's own defaults are correct.
+GO2RTC_DEFAULT_CONFIG = """api:
+  listen: ':1984'
+
+webrtc:
+  listen: ':8555'
+
+# Cameras are added here automatically as they are discovered via MQTT.
+streams:
+"""
+
+# Matches a stream entry so the source URL can be rewritten in place, keeping
+# the rest of the file (comments, formatting) untouched. Scoped to the hosts we
+# generate ourselves, so hand-added streams pointing elsewhere are left alone —
+# and so an entry written with the wrong one of the two gets corrected.
+_OUR_RTSP_HOSTS = "|".join(
+    re.escape(h) for h in sorted({GO2RTC_RTSP_HOST, RTSP_HOST})
+)
+_STREAM_LINE = re.compile(
+    r"^(\s+[^\s#:]+:\s*)"                                    # 1: "  name: "
+    r"(rtsp://(?:[^/@\s]*@)?(?:" + _OUR_RTSP_HOSTS + r")"
+    + re.escape(f":{RTSP_PORT}") + r"/"
+    r"([^/\s]+)_live)\s*$"                                   # 2: url, 3: device_id
+)
+
+
+def ensure_go2rtc_config() -> None:
+    """Create go2rtc.yaml if it is missing so go2rtc has something to read."""
+    try:
+        if not GO2RTC_CONFIG.exists():
+            GO2RTC_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+            GO2RTC_CONFIG.write_text(GO2RTC_DEFAULT_CONFIG)
+            print(f"Created {GO2RTC_CONFIG}")
+    except Exception as e:
+        print(f"Could not create {GO2RTC_CONFIG}: {e}")
+
+
+def go2rtc_streams() -> dict[str, str]:
+    """stream name → device_id, parsed from go2rtc.yaml."""
+    found: dict[str, str] = {}
+    try:
+        cfg = yaml.safe_load(GO2RTC_CONFIG.read_text()) or {}
+        for name, url in (cfg.get("streams") or {}).items():
+            if isinstance(url, str):
+                m = re.search(r"/([^/]+)_live", url)
+                if m:
+                    found[name] = m.group(1)
+    except Exception:
+        pass
+    return found
+
+
+def _go2rtc_put_stream(name: str, src: str) -> bool:
+    """Register or update a stream in the running go2rtc via its REST API.
+
+    Avoids a container restart, which would drop every active viewer.
+    """
+    try:
+        with httpx.Client(timeout=5) as client:
+            for method in ("PUT", "POST"):
+                resp = client.request(
+                    method, f"{GO2RTC_URL}/api/streams",
+                    params={"name": name, "src": src},
+                )
+                if resp.status_code < 300:
+                    return True
+    except Exception as e:
+        print(f"go2rtc API unreachable for stream '{name}': {e}")
+    return False
+
+
+def sync_go2rtc_credentials() -> None:
+    """Rewrite stream URLs in go2rtc.yaml that are out of date.
+
+    ring-mqtt only writes its livestream credentials once it has connected;
+    older configs contain ${RTSP_USER}/${RTSP_PASS} placeholders that go2rtc no
+    longer receives; and an entry may name the wrong host if it was written by a
+    backend running outside Docker. All three are repaired here.
+    """
+    if not GO2RTC_CONFIG.exists():
+        return
+    try:
+        lines = GO2RTC_CONFIG.read_text().splitlines(keepends=True)
+        changed: dict[str, str] = {}
+        for i, line in enumerate(lines):
+            m = _STREAM_LINE.match(line.rstrip("\n"))
+            if not m:
+                continue
+            prefix, current, device_id = m.groups()
+            wanted = rtsp_url(device_id, GO2RTC_RTSP_HOST)
+            if current != wanted:
+                lines[i] = f"{prefix}{wanted}\n"
+                changed[prefix.strip().rstrip(":")] = wanted
+        if not changed:
+            return
+        GO2RTC_CONFIG.write_text("".join(lines))
+        print(f"Updated RTSP credentials for {len(changed)} stream(s)")
+        for name, url in changed.items():
+            _go2rtc_put_stream(name, url)
+    except Exception as e:
+        print(f"Credential sync error: {e}")
+
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 
 _discovered_devices: set[str] = set()
@@ -204,9 +404,7 @@ _discovery_lock = threading.Lock()
 
 
 def _check_auto_discovery(device_id: str) -> None:
-    """If device_id is not in go2rtc.yaml, append a new stream entry and restart go2rtc."""
-    if not GO2RTC_CONFIG.exists():
-        return
+    """Add a stream entry for device_id to go2rtc.yaml if it has none yet."""
     if device_id in _discovered_devices:
         return
 
@@ -214,6 +412,7 @@ def _check_auto_discovery(device_id: str) -> None:
         if device_id in _discovered_devices:
             return
 
+        ensure_go2rtc_config()
         try:
             content = GO2RTC_CONFIG.read_text()
 
@@ -224,33 +423,26 @@ def _check_auto_discovery(device_id: str) -> None:
 
             # Build a safe stream name from last 6 chars of device_id
             stream_name = f"camera_{device_id[-6:]}"
-            new_line = (
-                f"  {stream_name}:"
-                f" rtsp://${{RTSP_USER}}:${{RTSP_PASS}}@ring-mqtt:8554/{device_id}_live\n"
-            )
+            src = rtsp_url(device_id, GO2RTC_RTSP_HOST)
 
             # Insert after the 'streams:' key
             lines = content.splitlines(keepends=True)
             idx = next((i for i, l in enumerate(lines) if l.strip() == "streams:"), None)
             if idx is None:
                 return
-            lines.insert(idx + 1, new_line)
+            lines.insert(idx + 1, f"  {stream_name}: {src}\n")
             GO2RTC_CONFIG.write_text("".join(lines))
             _discovered_devices.add(device_id)
             print(f"Auto-discovered device {device_id} → stream '{stream_name}'")
 
-            threading.Thread(target=restart_go2rtc, daemon=True).start()
+            # Register live so the new camera is streamable immediately. Only
+            # fall back to a restart (which interrupts active viewers) if the
+            # API call fails.
+            if not _go2rtc_put_stream(stream_name, src):
+                threading.Thread(target=restart_go2rtc, daemon=True).start()
 
         except Exception as e:
             print(f"Auto-discovery error for {device_id}: {e}")
-
-# ── RTSP credentials helper ───────────────────────────────────────────────────
-
-def _rtsp_credentials() -> tuple[str, str]:
-    cfg = load_ring_config()
-    user   = cfg.get("livestream_user") or RTSP_USER
-    passwd = cfg.get("livestream_pass") or RTSP_PASS
-    return user, passwd
 
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 
@@ -309,11 +501,8 @@ def setup_mqtt() -> mqtt.Client:
                     events.insert(0, event)
                     if len(events) > 100:
                         events.pop()
-                    if _loop:
-                        asyncio.run_coroutine_threadsafe(
-                            broadcast({"type": "event", "data": event}), _loop)
-                        asyncio.run_coroutine_threadsafe(
-                            send_notification(event), _loop)
+                    schedule(broadcast({"type": "event", "data": event}))
+                    schedule(send_notification(event))
 
                     # Auto-discover new cameras
                     _check_auto_discovery(device_id)
@@ -342,24 +531,21 @@ def setup_mqtt() -> mqtt.Client:
                         "wifi_network":  data.get("wirelessNetwork"),
                         "wifi_signal":   data.get("wirelessSignal"),
                     })
-                    if _loop:
-                        asyncio.run_coroutine_threadsafe(
-                            broadcast({"type": "device_state",
-                                       "device_id": device_id, "data": state}), _loop)
+                    schedule(broadcast({"type": "device_state",
+                                        "device_id": device_id, "data": state}))
 
                     # Low battery alert
                     battery = data.get("batteryLevel")
-                    if battery is not None and _loop:
+                    if battery is not None:
                         cfg = load_settings()
                         threshold = cfg.get("low_battery_threshold", 20)
                         if cfg.get("notify_on_low_battery", True) and battery <= threshold:
                             if device_id not in _low_battery_notified:
                                 _low_battery_notified.add(device_id)
-                                asyncio.run_coroutine_threadsafe(
-                                    send_device_alert(
-                                        "Low Battery",
-                                        f"Battery at {battery}% on {device_id}",
-                                    ), _loop)
+                                schedule(send_device_alert(
+                                    "Low Battery",
+                                    f"Battery at {battery}% on {device_id}",
+                                ))
                         elif battery > threshold:
                             _low_battery_notified.discard(device_id)
                 except Exception:
@@ -372,14 +558,13 @@ def setup_mqtt() -> mqtt.Client:
                 status      = payload.strip().lower()
                 prev        = _device_availability.get(device_id)
                 _device_availability[device_id] = status
-                if status == "offline" and prev != "offline" and _loop:
+                if status == "offline" and prev != "offline":
                     cfg = load_settings()
                     if cfg.get("notify_on_connection_lost", True):
-                        asyncio.run_coroutine_threadsafe(
-                            send_device_alert(
-                                "Device Offline",
-                                f"Connection lost to device {device_id}",
-                            ), _loop)
+                        schedule(send_device_alert(
+                            "Device Offline",
+                            f"Connection lost to device {device_id}",
+                        ))
 
             # Auto-discover cameras from info topics too
             if (len(parts) == 6 and parts[4] == "info" and parts[2] == "camera"):
@@ -430,6 +615,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 async def lifespan(app: FastAPI):
     global _loop
     _loop = asyncio.get_event_loop()
+    ensure_go2rtc_config()
+    sync_go2rtc_credentials()
     app.state.mqtt = setup_mqtt()
     yield
     app.state.mqtt.loop_stop()
@@ -525,9 +712,8 @@ async def set_password(req: SetPasswordRequest):
 @app.get("/api/status")
 async def get_status():
     cfg = load_settings()
-    ring_cfg = load_ring_config()
     return {
-        "ring_configured": bool(ring_cfg.get("ring_token")),
+        "ring_configured": ring_token_present(),
         "ha_configured": bool(cfg.get("ha_url") and cfg.get("ha_token")),
     }
 
@@ -552,7 +738,7 @@ async def ring_login(req: RingLoginRequest):
 
 @app.post("/api/auth/ring/verify")
 async def ring_verify(req: RingVerifyRequest):
-    session = pending_auth.pop(req.session_id, None)
+    session = pending_auth.get(req.session_id)
     if not session:
         raise HTTPException(400, "Invalid or expired session — please log in again")
     auth: Auth = session["auth"]
@@ -560,10 +746,13 @@ async def ring_verify(req: RingVerifyRequest):
         await auth.async_fetch_token(session["email"], session["password"], req.code)
         save_ring_token(auth._token["refresh_token"])
         await auth.async_close()
+        pending_auth.pop(req.session_id, None)
         restart_ring_mqtt()
         return {"success": True}
     except Exception as e:
-        await auth.async_close()
+        # The session is deliberately kept: a mistyped code, or a failure while
+        # saving the token, should not force the user back through email and
+        # password. Abandoned sessions are cleaned up by their TTL.
         raise HTTPException(400, str(e))
 
 # ── Cameras ───────────────────────────────────────────────────────────────────
@@ -573,17 +762,8 @@ async def get_cameras():
     # go2rtc uses lazy RTSP connections: producers is only populated while a stream
     # is actively being viewed. Parse go2rtc.yaml directly so device_id is always
     # available regardless of whether anyone is currently streaming.
-    yaml_device_ids: dict[str, str] = {}
-    try:
-        with open(GO2RTC_CONFIG) as f:
-            cfg = yaml.safe_load(f)
-        for stream_name, url in (cfg.get("streams") or {}).items():
-            if isinstance(url, str):
-                m = re.search(r"/([^/]+)_live", url)
-                if m:
-                    yaml_device_ids[stream_name] = m.group(1)
-    except Exception:
-        pass
+    sync_go2rtc_credentials()
+    yaml_device_ids = go2rtc_streams()
 
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -792,6 +972,11 @@ async def delete_recording(device_id: str, filename: str):
 # ── MJPEG streaming via ffmpeg ────────────────────────────────────────────────
 
 async def _get_device_id(stream_name: str) -> str | None:
+    # go2rtc.yaml first: producers is empty unless the stream is already being
+    # viewed, which is exactly when the MJPEG fallback is needed.
+    device_id = go2rtc_streams().get(stream_name)
+    if device_id:
+        return device_id
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(f"{GO2RTC_URL}/api/streams")
@@ -811,8 +996,7 @@ async def stream_mjpeg(stream_name: str):
     if not device_id:
         raise HTTPException(404, f"No RTSP source found for stream '{stream_name}'")
 
-    user, passwd = _rtsp_credentials()
-    rtsp_url = f"rtsp://{user}:{passwd}@{RTSP_HOST}:{RTSP_PORT}/{device_id}_live"
+    src = rtsp_url(device_id)
 
     async def generate():
         proc = await asyncio.create_subprocess_exec(
@@ -820,7 +1004,7 @@ async def stream_mjpeg(stream_name: str):
             "-loglevel", "error",
             "-rtsp_transport", "tcp",
             "-timeout", "30000000",
-            "-i", rtsp_url,
+            "-i", src,
             "-an",
             "-f", "mpjpeg",
             "-q:v", "5",
@@ -881,9 +1065,19 @@ async def video_proxy(websocket: WebSocket, src: str):
     try:
         async with ws_lib.connect(upstream_url) as upstream:
             async def to_upstream():
+                # go2rtc's signaling is JSON *text* frames. iter_bytes() raises
+                # on a text message, and the resulting silent failure meant the
+                # browser's WebRTC offer never reached go2rtc — the stream just
+                # stayed black. Forward whatever frame type actually arrives.
                 try:
-                    async for data in websocket.iter_bytes():
-                        await upstream.send(data)
+                    while True:
+                        message = await websocket.receive()
+                        if message["type"] == "websocket.disconnect":
+                            break
+                        if message.get("text") is not None:
+                            await upstream.send(message["text"])
+                        elif message.get("bytes") is not None:
+                            await upstream.send(message["bytes"])
                 except (WebSocketDisconnect, Exception):
                     pass
 
@@ -924,4 +1118,11 @@ async def events_ws(websocket: WebSocket):
 
 # ── Static files ──────────────────────────────────────────────────────────────
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# Built by the Docker image at /app/static. Absent when running the backend
+# directly for development, where vite serves the frontend on :5173 and proxies
+# the API here — mounting unconditionally would crash startup.
+STATIC_DIR = Path(os.getenv("STATIC_DIR", "static"))
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+else:
+    print(f"No static directory at '{STATIC_DIR}' — serving API only")

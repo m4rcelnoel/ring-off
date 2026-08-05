@@ -42,13 +42,17 @@ services:
     container_name: ring-go2rtc
     restart: unless-stopped
     ports:
-      - "1984:1984"   # web UI + API
-      - "8555:8555"   # re-stream RTSP
+      - "1984:1984"       # web UI + API
+      # WebRTC media. Both protocols are required: without the UDP mapping the
+      # browser can only fall back to TCP, and without TCP it cannot connect at
+      # all when UDP is blocked.
+      - "8555:8555/tcp"
+      - "8555:8555/udp"
     volumes:
-      - ./config/go2rtc.yaml:/config/go2rtc.yaml:ro
-    environment:
-      - RTSP_USER=${RTSP_USER}
-      - RTSP_PASS=${RTSP_PASS}
+      # Mount the directory, not the single file: if config/go2rtc.yaml does not
+      # exist yet, a file bind-mount makes Docker silently create a *directory*
+      # in its place. The webapp creates the file on first start.
+      - ./config:/config:ro
     depends_on:
       ring-mqtt:
         condition: service_started
@@ -82,8 +86,6 @@ services:
       - RING_MQTT_CONFIG=/ring-mqtt-data/config.json
       - RTSP_HOST=ring-mqtt
       - RTSP_PORT=8554
-      - RTSP_USER=${RTSP_USER}
-      - RTSP_PASS=${RTSP_PASS}
       - VIDEO_PATH=/videos
     depends_on:
       mosquitto:
