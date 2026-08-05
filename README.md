@@ -226,16 +226,26 @@ https://gotify.yourhost.com/message?token=YOUR_APP_TOKEN
 
 ### Service ports
 
-| Service | Port | Purpose |
-|---|---|---|
-| webapp | **8080** | Web UI + API (expose this one) |
-| go2rtc | 8555 tcp+udp | WebRTC media — the browser connects here directly for live video |
-| go2rtc | 1984 | go2rtc web UI + API (internal) |
-| mosquitto | 1883 | MQTT broker (internal) |
-| ring-mqtt | 8554 | RTSP streams (internal) |
-| ring-mqtt | 55123 | Ring token setup UI (only needed as a fallback — the web UI can do this) |
+Only two ports are published. Everything else talks over the Docker network.
 
-> **8555 needs both protocols.** WebRTC prefers UDP and falls back to TCP; mapping only one leaves browsers unable to connect on networks that block the other. `docker-compose.yml` publishes both.
+| Service | Port | Published | Purpose |
+|---|---|---|---|
+| webapp | **8080** | yes | Web UI + API |
+| go2rtc | **8555** tcp+udp | yes | WebRTC media — the browser connects here directly for live video |
+| go2rtc | 1984 | no | go2rtc UI and API; the webapp proxies what it needs |
+| mosquitto | 1883 | no | MQTT broker |
+| ring-mqtt | 8554 | no | RTSP streams |
+| ring-mqtt | 55123 | no | ring-mqtt's own token setup UI — the setup wizard replaces it |
+
+> **8555 needs both protocols.** WebRTC prefers UDP and falls back to TCP; mapping only one leaves browsers unable to connect on networks that block the other.
+
+> **Why the others are closed.** The broker allows anonymous connections and ring-mqtt's setup UI has no authentication at all, so publishing them hands anyone on your network your Ring topics and camera streams. Each is a one-line `ports:` entry in `docker-compose.yml` if you need it — put a password on Mosquitto first if you expose 1883 for Home Assistant.
+
+### Docker socket
+
+The webapp does **not** mount `/var/run/docker.sock`. That is root-equivalent access to the host, and this is the container that parses browser input.
+
+It was previously used to restart go2rtc when a camera appeared and ring-mqtt after a Ring sign-in. go2rtc is now updated over its REST API instead, and ring-mqtt retries authentication by itself roughly once a minute — so the only cost is that the setup wizard may wait a little longer for devices. Uncomment the mount in `docker-compose.yml` if you would rather have the immediate restart.
 
 ---
 

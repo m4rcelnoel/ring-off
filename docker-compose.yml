@@ -4,8 +4,9 @@ services:
     image: eclipse-mosquitto:2
     container_name: ring-mosquitto
     restart: unless-stopped
-    ports:
-      - "1883:1883"
+    # Not published. The broker allows anonymous access, so exposing it would
+    # let anyone on your network read and inject Ring topics. To point Home
+    # Assistant at it, add:  ports: ["1883:1883"]  — and set a password first.
     volumes:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./data/mosquitto:/mosquitto/data
@@ -21,9 +22,11 @@ services:
     container_name: ring-mqtt
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/ring-mqtt-init.sh"]
-    ports:
-      - "8554:8554"   # RTSP streams (internal)
-      - "55123:55123" # first-run token setup
+    # Neither port is published. 8554 is the RTSP server, reached over the Docker
+    # network by go2rtc and the recorder. 55123 is ring-mqtt's own token setup
+    # UI, which has no authentication and is no longer needed — the Ring Off
+    # setup wizard does the sign-in. To use it as a fallback, temporarily add:
+    #   ports: ["55123:55123"]
     volumes:
       - ./data/ring-mqtt:/data
       - ./config/ring-mqtt-init.sh:/ring-mqtt-init.sh:ro
@@ -42,12 +45,14 @@ services:
     container_name: ring-go2rtc
     restart: unless-stopped
     ports:
-      - "1984:1984"       # web UI + API
-      # WebRTC media. Both protocols are required: without the UDP mapping the
+      # WebRTC media — the browser connects here directly, so this one must be
+      # reachable. Both protocols are required: without the UDP mapping the
       # browser can only fall back to TCP, and without TCP it cannot connect at
       # all when UDP is blocked.
       - "8555:8555/tcp"
       - "8555:8555/udp"
+      # go2rtc's own UI and API stay internal; the webapp proxies what it needs.
+      # Add "1984:1984" if you want to open the go2rtc UI directly.
     volumes:
       # Mount the directory, not the single file: if config/go2rtc.yaml does not
       # exist yet, a file bind-mount makes Docker silently create a *directory*
@@ -74,7 +79,16 @@ services:
       - ./data/ring-mqtt:/ring-mqtt-data
       - ./data/webapp:/app/data
       - ./data/videos:/videos                     # recordings browser
-      - /var/run/docker.sock:/var/run/docker.sock
+      # The Docker socket is NOT mounted. It is root-equivalent access to the
+      # host, on the one container that parses input from a browser.
+      #
+      # It was used to restart ring-mqtt after a Ring sign-in and to restart
+      # go2rtc when a camera was discovered. Neither is required any more:
+      # go2rtc is updated over its REST API, and ring-mqtt retries authentication
+      # by itself within about a minute, so setup just takes a little longer.
+      #
+      # Uncomment for an immediate restart instead of that wait:
+      # - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - MQTT_HOST=mosquitto
       - MQTT_PORT=1883

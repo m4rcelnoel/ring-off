@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import socket
+import time
 import unicodedata
 import re
 import secrets
@@ -79,7 +80,8 @@ ws_clients: set[WebSocket] = set()
 device_states: dict        = {}   # device_id → device info
 snapshots: dict[str, bytes]= {}   # device_id → latest JPEG bytes
 motion_attrs: dict         = {}   # device_id → latest motion/attributes payload
-app_sessions: set[str]     = set()  # active session tokens
+app_sessions: dict[str, float] = {}  # session token → expiry (unix seconds)
+_login_attempts: dict[str, list[float]] = {}  # client ip → recent failure times
 _loop: asyncio.AbstractEventLoop | None = None
 _low_battery_notified: set[str] = set()  # device_ids already alerted for low battery
 _device_availability: dict[str, str] = {}  # device_id → "online"/"offline"
@@ -107,15 +109,47 @@ SETTINGS_DEFAULTS: dict = {
 }
 
 
+_settings_cache: dict | None = None
+_settings_mtime: float | None = None
+_settings_lock = threading.Lock()
+
+
 def load_settings() -> dict:
-    if SETTINGS_FILE.exists():
-        return {**SETTINGS_DEFAULTS, **json.loads(SETTINGS_FILE.read_text())}
-    return dict(SETTINGS_DEFAULTS)
+    """Settings, cached until the file changes on disk.
+
+    This is read on every HTTP request by the auth middleware and on every MQTT
+    message, so the naive re-read was a synchronous file read and JSON parse per
+    MJPEG frame request. The mtime check keeps an external edit of settings.json
+    working.
+    """
+    global _settings_cache, _settings_mtime
+    try:
+        mtime = SETTINGS_FILE.stat().st_mtime
+    except OSError:
+        return dict(SETTINGS_DEFAULTS)
+
+    with _settings_lock:
+        if _settings_cache is None or mtime != _settings_mtime:
+            try:
+                stored = json.loads(SETTINGS_FILE.read_text())
+            except Exception:
+                return dict(SETTINGS_DEFAULTS)
+            _settings_cache = {**SETTINGS_DEFAULTS, **stored}
+            _settings_mtime = mtime
+        # Copy: callers mutate what they get back before saving it again.
+        return dict(_settings_cache)
 
 
 def save_settings(data: dict) -> None:
+    global _settings_cache, _settings_mtime
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    with _settings_lock:
+        _settings_cache = dict(data)
+        try:
+            _settings_mtime = SETTINGS_FILE.stat().st_mtime
+        except OSError:
+            _settings_mtime = None
 
 
 def load_ring_config() -> dict:
@@ -160,13 +194,19 @@ def save_ring_token(refresh_token: str) -> None:
 
 
 def restart_ring_mqtt() -> None:
+    """Nudge ring-mqtt to pick up a freshly written token.
+
+    Optional: without the Docker socket this fails harmlessly, and ring-mqtt
+    retries authentication with the token on disk about once a minute anyway.
+    """
     try:
         client = docker.from_env()
         container = client.containers.get(RING_CONTAINER)
         container.restart()
         print("ring-mqtt restarted")
     except Exception as e:
-        print(f"Could not restart ring-mqtt: {e}")
+        print(f"Could not restart ring-mqtt ({e}) — it will retry with the new "
+              f"token on its own within about a minute.")
 
 
 def restart_go2rtc() -> None:
@@ -737,8 +777,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path in _UNPROTECTED_PATHS:
             return await call_next(request)
 
-        token = request.cookies.get("ring_session", "")
-        if token and token in app_sessions:
+        if session_is_valid(request.cookies.get("ring_session", "")):
             return await call_next(request)
 
         # Block protected API / streaming paths
@@ -805,6 +844,51 @@ class AppLoginRequest(BaseModel):
 
 class SetPasswordRequest(BaseModel):
     password: str
+    current_password: str = ""
+
+# ── Session and login-attempt bookkeeping ─────────────────────────────────────
+
+SESSION_TTL      = 86400 * 30   # matches the cookie lifetime
+LOGIN_WINDOW     = 300          # seconds a failed attempt is remembered
+LOGIN_MAX_TRIES  = 10           # failures per window before locking out
+PENDING_AUTH_TTL = 300          # a 2FA session holds the password in memory
+
+
+def _prune_sessions() -> None:
+    now = time.time()
+    for token, expiry in list(app_sessions.items()):
+        if expiry <= now:
+            del app_sessions[token]
+
+
+def session_is_valid(token: str) -> bool:
+    if not token:
+        return False
+    _prune_sessions()
+    return token in app_sessions
+
+
+def _login_blocked(client: str) -> bool:
+    """True once a client has burned through its failures for this window."""
+    now = time.time()
+    recent = [t for t in _login_attempts.get(client, []) if now - t < LOGIN_WINDOW]
+    if recent:
+        _login_attempts[client] = recent
+    else:
+        _login_attempts.pop(client, None)
+    return len(recent) >= LOGIN_MAX_TRIES
+
+
+def _record_login_failure(client: str) -> None:
+    _login_attempts.setdefault(client, []).append(time.time())
+
+
+def prune_pending_auth() -> None:
+    """Drop abandoned 2FA sessions — they hold the Ring password in memory."""
+    now = time.time()
+    for sid, session in list(pending_auth.items()):
+        if now - session.get("created", 0) > PENDING_AUTH_TTL:
+            del pending_auth[sid]
 
 # ── App authentication ────────────────────────────────────────────────────────
 
@@ -817,32 +901,41 @@ async def app_auth_status(request: Request):
     token = request.cookies.get("ring_session", "")
     return {
         "auth_required": True,
-        "authenticated": bool(token and token in app_sessions),
+        "authenticated": session_is_valid(token),
     }
 
 
 @app.post("/api/app/login")
-async def app_login(req: AppLoginRequest, response: Response):
+async def app_login(req: AppLoginRequest, request: Request, response: Response):
     settings = load_settings()
     password_hash = settings.get("app_password_hash", "")
     if not password_hash:
         return {"success": True}
+
+    client = request.client.host if request.client else "unknown"
+    if _login_blocked(client):
+        raise HTTPException(
+            429, "Too many failed attempts — wait a few minutes and try again")
+
     if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
+        _record_login_failure(client)
         raise HTTPException(401, "Wrong password")
+
+    _login_attempts.pop(client, None)
     token = secrets.token_urlsafe(32)
-    app_sessions.add(token)
+    app_sessions[token] = time.time() + SESSION_TTL
+    _prune_sessions()
     response.set_cookie(
         "ring_session", token,
         httponly=True, samesite="lax",
-        max_age=86400 * 30,  # 30 days
+        max_age=SESSION_TTL,
     )
     return {"success": True}
 
 
 @app.post("/api/app/logout")
 async def app_logout(request: Request, response: Response):
-    token = request.cookies.get("ring_session", "")
-    app_sessions.discard(token)
+    app_sessions.pop(request.cookies.get("ring_session", ""), None)
     response.delete_cookie("ring_session")
     return {"success": True}
 
@@ -850,12 +943,22 @@ async def app_logout(request: Request, response: Response):
 @app.post("/api/app/set-password")
 async def set_password(req: SetPasswordRequest):
     settings = load_settings()
+    existing = settings.get("app_password_hash", "")
+
+    # Changing or clearing an existing password requires proving you know it —
+    # a session alone is not enough, since a borrowed browser would do.
+    if existing and not bcrypt.checkpw(req.current_password.encode(), existing.encode()):
+        raise HTTPException(403, "Current password is incorrect")
+
     if req.password:
-        hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
-        settings["app_password_hash"] = hashed
+        settings["app_password_hash"] = bcrypt.hashpw(
+            req.password.encode(), bcrypt.gensalt()).decode()
     else:
         settings["app_password_hash"] = ""
     save_settings(settings)
+
+    # Any other browser holding a session is now stale.
+    app_sessions.clear()
     return {"success": True}
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -1069,7 +1172,9 @@ async def ring_login(req: RingLoginRequest):
         return {"success": True}
     except Requires2FAError:
         sid = str(uuid.uuid4())
-        pending_auth[sid] = {"auth": auth, "email": req.email, "password": req.password}
+        prune_pending_auth()
+        pending_auth[sid] = {"auth": auth, "email": req.email,
+                             "password": req.password, "created": time.time()}
         return {"needs_2fa": True, "session_id": sid}
     except Exception as e:
         raise HTTPException(400, str(e))
@@ -1077,6 +1182,7 @@ async def ring_login(req: RingLoginRequest):
 
 @app.post("/api/auth/ring/verify")
 async def ring_verify(req: RingVerifyRequest):
+    prune_pending_auth()
     session = pending_auth.get(req.session_id)
     if not session:
         raise HTTPException(400, "Invalid or expired session — please log in again")

@@ -214,7 +214,10 @@ function DiscoveryStep({ onNext }: { onNext: () => void }) {
         <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           <p className="text-sm text-muted-foreground">Waiting for the first device…</p>
-          {waited >= 60 && (
+          <p className="text-xs text-muted-foreground/70 max-w-xs leading-relaxed">
+            This can take up to a minute while ring-mqtt picks up the new token.
+          </p>
+          {waited >= 90 && (
             <p className="text-xs text-amber-400 max-w-xs leading-relaxed">
               Still nothing after a minute. Check <code>docker compose logs ring-mqtt</code> —
               an expired or rejected token is the usual cause.

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+**Ports 1883, 1984, 8554 and 55123 are no longer published.** Only 8080 and 8555 are. If you point Home Assistant at the bundled broker, or open the go2rtc UI directly, re-add the mapping you need in `docker-compose.yml` — and set a Mosquitto password before exposing 1883.
+
+**The Docker socket is no longer mounted.** Nothing needs it; setup may just wait up to a minute for ring-mqtt to retry authentication instead of being restarted. Uncomment the mount to get the old behaviour back.
+
+For development against a host-run backend, `docker-compose.dev.yml` republishes the internal ports on `127.0.0.1`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+### Security
+
+- **Internal ports are closed** — Mosquitto accepts anonymous connections and ring-mqtt's token UI has no authentication, so publishing them exposed every Ring topic and the RTSP streams to anyone on the network. Both, plus go2rtc's API, are now reachable only over the Docker network.
+- **The Docker socket mount is gone** — it granted root-equivalent host access to the container that parses browser input. Its two uses are obsolete: go2rtc is updated over its REST API, and ring-mqtt re-reads its token on its own retry cycle.
+- **Login throttling** — ten failed attempts per five minutes locks a client out with a 429. Previously the bcrypt hash could be guessed at unlimited speed.
+- **Sessions expire** — tokens now carry a 30-day expiry matching the cookie and are pruned as they lapse, instead of living in a set until the process restarted.
+- **Changing the password requires the current one**, and doing so invalidates every existing session. A session alone used to be enough, so a borrowed browser could lock the owner out.
+- **Abandoned 2FA sessions are dropped after five minutes** — they hold the Ring email and password in plaintext in memory, and were previously kept until the process exited.
+
+### Changed
+- **Settings are cached** until `settings.json` changes on disk. The auth middleware read and parsed it on every single HTTP request — including every MJPEG frame — and the MQTT handler did the same per message. Hand-editing the file still works, via an mtime check.
+
 ## [1.3.0] - 2026-08-05
 
 ### Upgrading

@@ -1,11 +1,16 @@
-# Development override — builds webapp and recorder from local source instead of
-# pulling pre-built images from GHCR.
+# Development override.
 #
-# Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 #
-# Everything else (mosquitto, ring-mqtt, go2rtc, volumes, env vars) is inherited
-# from docker-compose.yml unchanged.
+# Two things differ from the production stack:
+#
+#  1. webapp and recorder are built from local source instead of pulled from GHCR
+#  2. the internal service ports are published on the host, so a backend run
+#     outside Docker (webapp/dev.sh) can reach the broker, ring-mqtt and go2rtc
+#
+# Those ports are deliberately closed in docker-compose.yml — the broker allows
+# anonymous access and ring-mqtt's setup UI has none at all. Only open them on a
+# machine you trust.
 
 services:
   webapp:
@@ -15,3 +20,16 @@ services:
   recorder:
     build: ./recorder
     image: ring-off-recorder:dev
+
+  mosquitto:
+    ports:
+      - "127.0.0.1:1883:1883"
+
+  ring-mqtt:
+    ports:
+      - "127.0.0.1:8554:8554"    # RTSP, for the webapp's MJPEG transcoding
+      - "127.0.0.1:55123:55123"  # ring-mqtt's own token UI, as a fallback
+
+  go2rtc:
+    ports:
+      - "127.0.0.1:1984:1984"    # go2rtc UI and API

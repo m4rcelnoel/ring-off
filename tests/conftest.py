@@ -39,6 +39,10 @@ def app(tmp_path, monkeypatch):
     main.motion_attrs.clear()
     main.ws_clients.clear()
     main.app_sessions.clear()
+    main._login_attempts.clear()
+    main.pending_auth.clear()
+    main._settings_cache = None
+    main._settings_mtime = None
     main._discovered_devices.clear()
     main._low_battery_notified.clear()
     main._device_availability.clear()
