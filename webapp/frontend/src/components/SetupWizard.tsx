@@ -4,15 +4,17 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import RingAuthForm from '@/components/RingAuthForm'
+import CameraEditor from '@/components/CameraEditor'
 import { api } from '@/lib/api'
 import type { Discovered, Preflight, PreflightCheck } from '@/types'
 
-type Step = 'preflight' | 'ring' | 'discovery' | 'done'
+type Step = 'preflight' | 'ring' | 'discovery' | 'cameras' | 'done'
 
 const STEPS: { key: Step; label: string }[] = [
   { key: 'preflight', label: 'Checks' },
   { key: 'ring',      label: 'Ring account' },
   { key: 'discovery', label: 'Devices' },
+  { key: 'cameras',   label: 'Cameras' },
   { key: 'done',      label: 'Finish' },
 ]
 
@@ -69,7 +71,8 @@ export default function SetupWizard({ onFinished, ringAlreadyAuthenticated }: Pr
         <div className="rounded-xl border border-border bg-card p-6 shadow-2xl">
           {step === 'preflight' && <PreflightStep onNext={() => setStep('ring')} />}
           {step === 'ring' && <RingStep onNext={() => setStep('discovery')} />}
-          {step === 'discovery' && <DiscoveryStep onNext={() => setStep('done')} />}
+          {step === 'discovery' && <DiscoveryStep onNext={() => setStep('cameras')} />}
+          {step === 'cameras' && <CameraStep onNext={() => setStep('done')} />}
           {step === 'done' && <DoneStep onFinish={finish} />}
         </div>
       </div>
@@ -237,7 +240,24 @@ function DiscoveryStep({ onNext }: { onNext: () => void }) {
   )
 }
 
-// ── Step 4: finish ────────────────────────────────────────────────────────────
+// ── Step 4: name the cameras ──────────────────────────────────────────────────
+
+function CameraStep({ onNext }: { onNext: () => void }) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="font-medium">Name your cameras</h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          Give each one a name you will recognise. Switch off any you do not want on the dashboard.
+          You can change all of this later in Settings.
+        </p>
+      </div>
+      <CameraEditor onSaved={onNext} />
+    </div>
+  )
+}
+
+// ── Step 5: finish ────────────────────────────────────────────────────────────
 
 function DoneStep({ onFinish }: { onFinish: () => void }) {
   const [saving, setSaving] = useState(false)

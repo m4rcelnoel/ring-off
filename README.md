@@ -114,13 +114,19 @@ docker compose up -d
 
 > **Optional services:** `go2rtc` (live streaming) and `recorder` (clip recording) are included by default. If you don't need one of them, comment out or remove its block in `docker-compose.yml`.
 
-**3. Open the web UI and sign in with your Ring account**
+**3. Open the web UI and follow the setup wizard**
 
-Navigate to **http://\<your-server-ip\>:8080** and log in with your Ring email and password. If your account uses two-factor authentication, you will be prompted for the code.
+Navigate to **http://\<your-server-ip\>:8080**. The wizard walks you through it:
 
-The refresh token is saved to `data/ring-mqtt/ring-state.json`, ring-mqtt restarts and connects to the Ring API, and your cameras appear on the dashboard within a few seconds — added to `config/go2rtc.yaml` automatically as they are discovered over MQTT.
+1. **Checks** — confirms the broker, ring-mqtt, go2rtc and the data folders are healthy, and tells you exactly what to fix if one is not
+2. **Ring account** — your email and password, plus a 2FA code if your account uses one
+3. **Devices** — cameras and chimes appear here as ring-mqtt announces them
+4. **Cameras** — name each one ("Front Door" rather than `Camera 169F41`) and switch off any you do not want
+5. **Finish**
 
-You only need to do this once; the token persists across restarts.
+The refresh token is saved to `data/ring-mqtt/ring-state.json` and ring-mqtt reconnects automatically. You only need to do this once; the token persists across restarts.
+
+Afterwards, **Settings → Cameras** lets you rename a camera or hide it from the dashboard at any time — no need to re-run setup. **Run setup again** in the same panel replays the whole wizard if you want to re-check services or sign in to a different Ring account.
 
 > ring-mqtt also has its own token setup UI on `:55123`. You no longer need it, but it still works if you prefer it or if the in-app login fails.
 

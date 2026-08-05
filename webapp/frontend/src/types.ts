@@ -92,6 +92,7 @@ export interface Preflight {
 export interface DiscoveredDevice {
   device_id: string
   name: string
+  enabled?: boolean
   battery_level?: number | null
   wifi_signal?: number | null
   has_snapshot: boolean

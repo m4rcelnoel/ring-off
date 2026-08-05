@@ -7,15 +7,17 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Badge } from '@/components/ui/badge'
+import CameraEditor from '@/components/CameraEditor'
 import { api } from '@/lib/api'
 import type { Settings } from '@/types'
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onCamerasChanged?: () => void
 }
 
-export default function SettingsSheet({ open, onOpenChange }: Props) {
+export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [haUrl, setHaUrl] = useState('')
   const [haToken, setHaToken] = useState('')
@@ -107,6 +109,17 @@ export default function SettingsSheet({ open, onOpenChange }: Props) {
             <p className="text-xs text-muted-foreground">
               Re-checks your services, lets you sign in to Ring again, and re-scans for devices.
             </p>
+          </div>
+
+          <Separator />
+
+          {/* Cameras */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Cameras</h3>
+            <p className="text-xs text-muted-foreground">
+              Rename a camera or hide it from the dashboard. Changes apply immediately — no restart, no re-running setup.
+            </p>
+            {open && <CameraEditor confirmInline onSaved={onCamerasChanged} />}
           </div>
 
           <Separator />

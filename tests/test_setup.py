@@ -136,3 +136,45 @@ def test_discovery_reports_snapshot_availability(app, mqtt_handler):
 
     mqtt_handler("ring/loc/camera/cam1/snapshot/image", b"\xff\xd8jpeg")
     assert get(app.setup_discovered())["cameras"][0]["has_snapshot"] is True
+
+
+def test_configured_cameras_survive_a_restart(app):
+    """device_states is empty until MQTT republishes, but an install that is
+    already configured must not look like it has no cameras."""
+    app.ensure_go2rtc_config()
+    app.GO2RTC_CONFIG.write_text(
+        app.GO2RTC_CONFIG.read_text() + "  front_door: rtsp://ring-mqtt:8554/aabbcc112233_live\n"
+    )
+    found = get(app.setup_discovered())
+    assert [c["device_id"] for c in found["cameras"]] == ["aabbcc112233"]
+
+
+def test_disabled_cameras_are_still_listed(app):
+    """Otherwise there is no way to switch one back on."""
+    settings = app.load_settings()
+    settings["disabled_cameras"] = ["aabbcc112233"]
+    app.save_settings(settings)
+    found = get(app.setup_discovered())
+    assert found["cameras"][0]["enabled"] is False
+
+
+def test_a_reset_survives_a_restart(app):
+    """adopt_existing_install() runs on every startup; it must not quietly
+    undo the user clicking "Run setup again"."""
+    app.save_ring_token("TOKEN")
+    get(app.setup_finish())
+    get(app.setup_reset())
+
+    app.adopt_existing_install()          # as if the webapp restarted
+
+    assert get(app.setup_state())["complete"] is False
+
+
+def test_adoption_only_happens_once(app):
+    app.save_ring_token("TOKEN")
+    app.adopt_existing_install()
+    assert get(app.setup_state())["complete"] is True
+
+    get(app.setup_reset())
+    app.adopt_existing_install()
+    assert get(app.setup_state())["complete"] is False

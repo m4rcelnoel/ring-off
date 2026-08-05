@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import socket
+import unicodedata
 import re
 import secrets
 import threading
@@ -101,6 +102,8 @@ SETTINGS_DEFAULTS: dict = {
     "notify_on_connection_lost": True,
     "app_password_hash":         "",
     "setup_complete":            False,
+    "camera_names":              {},   # device_id → friendly name
+    "disabled_cameras":          [],   # device_ids the user chose not to show
 }
 
 
@@ -350,6 +353,36 @@ def go2rtc_streams() -> dict[str, str]:
     return found
 
 
+def _stream_slug(name: str, device_id: str, taken: set[str]) -> str:
+    """A go2rtc stream name derived from a friendly name.
+
+    Only ASCII letters, digits and underscores survive, so 'Vordertür' becomes
+    'vordertur'. The friendly name itself is kept separately in settings, which
+    is what the dashboard displays.
+    """
+    ascii_name = (unicodedata.normalize("NFKD", name)
+                  .encode("ascii", "ignore").decode())
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")
+    if not slug:
+        slug = f"camera_{device_id[-6:]}"
+    base, suffix = slug, 2
+    while slug in taken:
+        slug = f"{base}_{suffix}"
+        suffix += 1
+    taken.add(slug)
+    return slug
+
+
+def _go2rtc_delete_stream(name: str) -> bool:
+    try:
+        with httpx.Client(timeout=5) as client:
+            resp = client.delete(f"{GO2RTC_URL}/api/streams", params={"src": name})
+            return resp.status_code < 300
+    except Exception as e:
+        print(f"go2rtc API unreachable while removing '{name}': {e}")
+    return False
+
+
 def _go2rtc_put_stream(name: str, src: str) -> bool:
     """Register or update a stream in the running go2rtc via its REST API.
 
@@ -401,6 +434,88 @@ def sync_go2rtc_credentials() -> None:
     except Exception as e:
         print(f"Credential sync error: {e}")
 
+def apply_camera_selection(selections: list) -> dict:
+    """Write the user's camera choices to go2rtc.yaml and the running go2rtc.
+
+    Only entries for the given devices are touched — comments and hand-written
+    streams pointing at other hardware are preserved.
+    """
+    ensure_go2rtc_config()
+    settings = load_settings()
+    names: dict[str, str] = dict(settings.get("camera_names") or {})
+    disabled: set[str] = set(settings.get("disabled_cameras") or [])
+
+    lines = GO2RTC_CONFIG.read_text().splitlines(keepends=True)
+    pattern = _stream_line_pattern()
+    existing: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        m = pattern.match(line.rstrip("\n"))
+        if m:
+            existing[m.group(3)] = i
+
+    chosen_ids = {s.device_id for s in selections}
+    taken = {n for n, d in go2rtc_streams().items() if d not in chosen_ids}
+
+    drop: set[int] = set()
+    appended: list[str] = []
+    registered: list[tuple[str, str]] = []
+    removed: list[str] = []
+
+    for sel in selections:
+        index = existing.get(sel.device_id)
+
+        if not sel.enabled:
+            disabled.add(sel.device_id)
+            names.pop(sel.device_id, None)
+            if index is not None:
+                drop.add(index)
+                match = pattern.match(lines[index].rstrip("\n"))
+                if match:
+                    removed.append(match.group(1).strip().rstrip(":"))
+            continue
+
+        disabled.discard(sel.device_id)
+        friendly = sel.name.strip() or f"Camera {sel.device_id[-6:].upper()}"
+        names[sel.device_id] = friendly
+
+        slug = _stream_slug(friendly, sel.device_id, taken)
+        src = rtsp_url(sel.device_id, GO2RTC_RTSP_HOST)
+        entry = f"  {slug}: {src}\n"
+        registered.append((slug, src))
+
+        if index is not None:
+            previous = pattern.match(lines[index].rstrip("\n"))
+            if previous:
+                old_name = previous.group(1).strip().rstrip(":")
+                if old_name != slug:
+                    removed.append(old_name)
+            lines[index] = entry
+        else:
+            appended.append(entry)
+
+    # Rebuild in one pass so removals cannot shift the indices of replacements.
+    out = [line for i, line in enumerate(lines) if i not in drop]
+    if appended:
+        anchor = next((i for i, l in enumerate(out) if l.strip() == "streams:"), None)
+        if anchor is None:
+            out.append("streams:\n")
+            anchor = len(out) - 1
+        out[anchor + 1:anchor + 1] = appended
+
+    GO2RTC_CONFIG.write_text("".join(out))
+
+    settings["camera_names"] = names
+    settings["disabled_cameras"] = sorted(disabled)
+    save_settings(settings)
+
+    _discovered_devices.update(s.device_id for s in selections if s.enabled)
+    for name in removed:
+        _go2rtc_delete_stream(name)
+    for slug, src in registered:
+        _go2rtc_put_stream(slug, src)
+
+    return {"enabled": len(registered), "disabled": len(disabled)}
+
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 
 _discovered_devices: set[str] = set()
@@ -410,6 +525,9 @@ _discovery_lock = threading.Lock()
 def _check_auto_discovery(device_id: str) -> None:
     """Add a stream entry for device_id to go2rtc.yaml if it has none yet."""
     if device_id in _discovered_devices:
+        return
+    # A camera the user switched off must not reappear on the next MQTT message.
+    if device_id in set(load_settings().get("disabled_cameras") or []):
         return
 
     with _discovery_lock:
@@ -665,6 +783,14 @@ class SettingsRequest(BaseModel):
     low_battery_threshold: int = 20
     notify_on_connection_lost: bool = True
 
+class CameraSelection(BaseModel):
+    device_id: str
+    name: str = ""
+    enabled: bool = True
+
+class CameraSelectionRequest(BaseModel):
+    cameras: list[CameraSelection]
+
 class AppLoginRequest(BaseModel):
     password: str
 
@@ -762,10 +888,16 @@ def adopt_existing_install() -> None:
     """Mark setup done for deployments that were configured before the wizard.
 
     Without this, upgrading users would be sent back through onboarding for an
-    install that already works.
+    install that already works. It runs only when the flag has never been
+    written: once the user has finished or explicitly restarted setup, that
+    choice is theirs, and re-adopting here would undo "Run setup again" on the
+    next restart.
     """
-    settings = load_settings()
-    if not settings.get("setup_complete") and ring_token_present():
+    stored = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.exists() else {}
+    if "setup_complete" in stored:
+        return
+    if ring_token_present():
+        settings = load_settings()
         settings["setup_complete"] = True
         save_settings(settings)
         print("Existing Ring configuration detected — skipping guided setup")
@@ -823,23 +955,63 @@ async def setup_preflight():
     }
 
 
+def camera_config_list() -> list[dict]:
+    """Every known camera with its name and on/off state.
+
+    device_states only holds what MQTT has published since this process started,
+    and ring-mqtt re-announces on its own schedule. Cameras already configured,
+    named or disabled are merged in, so a restart never makes a working install
+    look empty.
+    """
+    settings = load_settings()
+    names = settings.get("camera_names") or {}
+    disabled = set(settings.get("disabled_cameras") or [])
+
+    chime_ids = {d for d, s in device_states.items() if s.get("type") == "chime"}
+    camera_ids = ({d for d, s in device_states.items() if s.get("type") == "camera"}
+                  | set(go2rtc_streams().values())
+                  | set(names) | disabled) - chime_ids
+
+    return [
+        {
+            "device_id":     device_id,
+            "name":          names.get(device_id) or f"Camera {device_id[-6:].upper()}",
+            "enabled":       device_id not in disabled,
+            "battery_level": device_states.get(device_id, {}).get("battery_level"),
+            "wifi_signal":   device_states.get(device_id, {}).get("wifi_signal"),
+            "has_snapshot":  device_id in snapshots,
+        }
+        for device_id in sorted(camera_ids)
+    ]
+
+
+@app.get("/api/cameras/config")
+async def get_camera_config():
+    """Camera names and toggles, for the wizard and the settings sheet alike."""
+    return camera_config_list()
+
+
+@app.post("/api/cameras/config")
+async def save_camera_config(req: CameraSelectionRequest):
+    return apply_camera_selection(req.cameras)
+
+
 @app.get("/api/setup/discovered")
 async def setup_discovered():
     """Devices seen on MQTT so far, for live progress during onboarding."""
-    cameras, chimes = [], []
-    for device_id, state in device_states.items():
-        entry = {
+    chime_ids = {d for d, s in device_states.items() if s.get("type") == "chime"}
+    cameras = camera_config_list()
+    chimes = [
+        {
             "device_id":     device_id,
-            "name":          f"Camera {device_id[-6:].upper()}",
-            "battery_level": state.get("battery_level"),
-            "wifi_signal":   state.get("wifi_signal"),
-            "has_snapshot":  device_id in snapshots,
+            "name":          f"Chime {device_id[-4:].upper()}",
+            "enabled":       True,
+            "battery_level": device_states[device_id].get("battery_level"),
+            "wifi_signal":   device_states[device_id].get("wifi_signal"),
+            "has_snapshot":  False,
         }
-        if state.get("type") == "camera":
-            cameras.append(entry)
-        else:
-            entry["name"] = f"Chime {device_id[-4:].upper()}"
-            chimes.append(entry)
+        for device_id in sorted(chime_ids)
+    ]
     return {
         "ring_authenticated": ring_token_present(),
         "mqtt_connected":     _mqtt_connected,
@@ -911,6 +1083,7 @@ async def get_cameras():
     # available regardless of whether anyone is currently streaming.
     sync_go2rtc_credentials()
     yaml_device_ids = go2rtc_streams()
+    friendly_names = load_settings().get("camera_names") or {}
 
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -927,7 +1100,8 @@ async def get_cameras():
                             break
                 cameras.append({
                     "id": name,
-                    "name": name.replace("_", " ").title(),
+                    "name": (friendly_names.get(device_id) if device_id else None)
+                            or name.replace("_", " ").title(),
                     "stream": name,
                     "device_id": device_id,
                     "has_snapshot": device_id in snapshots if device_id else False,

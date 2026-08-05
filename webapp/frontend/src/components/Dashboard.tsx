@@ -235,6 +235,7 @@ export default function Dashboard() {
       <SettingsSheet
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
+        onCamerasChanged={loadCameras}
       />
     </div>
   )
