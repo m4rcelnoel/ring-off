@@ -564,6 +564,18 @@ pip install -r requirements.txt
 
 Override any variable by exporting it first, e.g. `PORT=8081 ./dev.sh`.
 
+### Tests
+
+```bash
+pip install -r webapp/requirements.txt -r recorder/requirements.txt -r requirements-dev.txt
+pytest
+```
+
+The suite runs without Docker, a broker or a Ring account: MQTT topic handling is
+driven through the real `on_message` callback with a stubbed connection, and every
+config path is redirected to a temporary directory. CI runs it, together with a
+frontend typecheck, before any image is built.
+
 ### Frontend hot-reload
 
 ```bash

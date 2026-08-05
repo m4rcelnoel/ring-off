@@ -1,0 +1,4 @@
+# Test dependencies. The services' own requirements are installed alongside:
+#   pip install -r webapp/requirements.txt -r recorder/requirements.txt -r requirements-dev.txt
+#   pytest
+pytest>=8.0

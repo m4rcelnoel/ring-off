@@ -310,15 +310,15 @@ streams:
 # the rest of the file (comments, formatting) untouched. Scoped to the hosts we
 # generate ourselves, so hand-added streams pointing elsewhere are left alone —
 # and so an entry written with the wrong one of the two gets corrected.
-_OUR_RTSP_HOSTS = "|".join(
-    re.escape(h) for h in sorted({GO2RTC_RTSP_HOST, RTSP_HOST})
-)
-_STREAM_LINE = re.compile(
-    r"^(\s+[^\s#:]+:\s*)"                                    # 1: "  name: "
-    r"(rtsp://(?:[^/@\s]*@)?(?:" + _OUR_RTSP_HOSTS + r")"
-    + re.escape(f":{RTSP_PORT}") + r"/"
-    r"([^/\s]+)_live)\s*$"                                   # 2: url, 3: device_id
-)
+def _stream_line_pattern() -> re.Pattern:
+    """Built on demand so it always reflects the current host settings."""
+    hosts = "|".join(re.escape(h) for h in sorted({GO2RTC_RTSP_HOST, RTSP_HOST}))
+    return re.compile(
+        r"^(\s+[^\s#:]+:\s*)"                                # 1: "  name: "
+        r"(rtsp://(?:[^/@\s]*@)?(?:" + hosts + r")"
+        + re.escape(f":{RTSP_PORT}") + r"/"
+        r"([^/\s]+)_live)\s*$"                               # 2: url, 3: device_id
+    )
 
 
 def ensure_go2rtc_config() -> None:
@@ -379,8 +379,9 @@ def sync_go2rtc_credentials() -> None:
     try:
         lines = GO2RTC_CONFIG.read_text().splitlines(keepends=True)
         changed: dict[str, str] = {}
+        pattern = _stream_line_pattern()
         for i, line in enumerate(lines):
-            m = _STREAM_LINE.match(line.rstrip("\n"))
+            m = pattern.match(line.rstrip("\n"))
             if not m:
                 continue
             prefix, current, device_id = m.groups()
@@ -552,8 +553,11 @@ def setup_mqtt() -> mqtt.Client:
                     pass
 
             # availability: connection lost/restored
-            # ring/<loc>/<camera|chime>/<device_id>/availability
-            if (len(parts) == 6 and parts[4] == "availability"):
+            # ring/<loc>/<camera|chime>/<device_id>/status  — five segments, and
+            # the segment is "status". ring-mqtt builds it as
+            # `${deviceTopic}/status` (devices/base-ring-device.js); matching
+            # "availability" over six segments never fired at all.
+            if (len(parts) == 5 and parts[4] == "status"):
                 device_id   = parts[3]
                 status      = payload.strip().lower()
                 prev        = _device_availability.get(device_id)

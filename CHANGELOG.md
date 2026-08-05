@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.6] - 2026-08-05
 
+### Added
+- **Test suite and CI gate** — 66 tests covering MQTT topic handling, go2rtc config generation and repair, RTSP URL construction, Ring token storage, settings validation, recordings path traversal and the auth middleware. They need no Docker, broker or Ring account. The build workflow now runs them, plus a frontend typecheck, before any image is published.
+
 ### Fixed
+- **"Notify on connection lost" never fired** — the MQTT handler matched a six-segment topic ending in `availability`, but ring-mqtt publishes device availability to `${deviceTopic}/status`, which has five segments and ends in `status` (`devices/base-ring-device.js`). The branch was unreachable, so a device going offline produced no alert and `_device_availability` stayed empty. Found by the new test suite on its first run.
 - **ring-mqtt crash-looped on every fresh deployment** — ring-mqtt 5.9.3 refuses to start when `/data/config.json` is absent ("No configuration file found… shutting down container"), and nothing in the project ever created it. The container therefore restarted forever, and the token setup UI on `:55123` — the very thing the README sends you to in order to produce that file — never came up. `config/ring-mqtt-init.sh` now writes a complete default config when none exists, using ring-mqtt's own schema.
 - **The in-app Ring login never actually authenticated ring-mqtt** — `save_ring_token()` wrote the refresh token to `config.json`, but ring-mqtt reads it from `ring-state.json` (`lib/state.js` → `lib/ring.js`); `config.json` has no `ring_token` field at all. Signing in through the web UI appeared to succeed and flipped `ring_configured` to true, so the dashboard loaded — while ring-mqtt kept reporting "No refresh token was found" and no cameras ever appeared. The token is now written to the state file in ring-mqtt's schema, and `/api/status` reports on that file.
 - **A failed 2FA code discarded the login session** — `/api/auth/ring/verify` popped the pending session before using it, so a mistyped verification code (or any error while saving the token) forced the user back to re-entering their email and password. The session is now kept until verification actually succeeds.

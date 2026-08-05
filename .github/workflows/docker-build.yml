@@ -13,8 +13,47 @@ env:
   RECORDER_IMAGE: ghcr.io/${{ github.repository_owner }}/ring-off-recorder
 
 jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r webapp/requirements.txt \
+                      -r recorder/requirements.txt \
+                      -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: webapp/frontend
+        run: npm ci
+
+      - name: Typecheck frontend
+        working-directory: webapp/frontend
+        run: npx tsc --noEmit
+
   build:
     name: Build ${{ matrix.service }}
+    # No image is published unless the tests pass.
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
