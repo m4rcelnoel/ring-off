@@ -96,7 +96,9 @@ export default function CameraCard({ camera, onExpand, deviceState }: Props) {
   const [active, setActive] = useState(false)
   const [snapshotOk, setSnapshotOk] = useState(true)
 
-  const snapshotUrl = camera.device_id && snapshotOk
+  // Only request a snapshot the backend actually has cached. Requesting one
+  // unconditionally makes every card without a snapshot log a 404.
+  const snapshotUrl = camera.device_id && camera.has_snapshot && snapshotOk
     ? `/api/snapshot/${camera.device_id}`
     : null
 
