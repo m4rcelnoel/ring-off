@@ -2,7 +2,8 @@ name: Build & Push Docker Images
 
 on:
   push:
-    branches: [main]
+    # staging is where work lands first; main only ever receives merges from it.
+    branches: [main, staging]
     tags: ['v*']
   pull_request:
     branches: [main]

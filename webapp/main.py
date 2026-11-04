@@ -70,7 +70,27 @@ GO2RTC_RTSP_HOST  = os.getenv("GO2RTC_RTSP_HOST",       "ring-mqtt")
 RTSP_USER         = os.getenv("RTSP_USER",              "")
 RTSP_PASS         = os.getenv("RTSP_PASS",              "")
 VIDEO_PATH        = Path(os.getenv("VIDEO_PATH",        "/videos"))
-USER_AGENT        = "ring-off/1.1"
+def _app_version() -> str:
+    """One version for the UI, the image and the Ring User-Agent.
+
+    Written into the image from the frontend's package.json at build time; the
+    env var is an escape hatch and "dev" covers running straight from a checkout.
+    """
+    if env := os.getenv("APP_VERSION"):
+        return env.strip()
+    here = Path(__file__).parent
+    try:                                    # written into the image at build time
+        return (here / "version.txt").read_text().strip() or "dev"
+    except OSError:
+        pass
+    try:                                    # running from a checkout
+        return json.loads((here / "frontend" / "package.json").read_text())["version"]
+    except Exception:
+        return "dev"
+
+
+APP_VERSION       = _app_version()
+USER_AGENT        = f"ring-off/{APP_VERSION}"
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 
@@ -104,6 +124,7 @@ SETTINGS_DEFAULTS: dict = {
     "notify_on_connection_lost": True,
     "app_password_hash":         "",
     "setup_complete":            False,
+    "ha_entity_filter":          "",   # comma-separated match terms, blank = ring,doorbell
     "camera_names":              {},   # device_id → friendly name
     "disabled_cameras":          [],   # device_ids the user chose not to show
 }
@@ -150,6 +171,67 @@ def save_settings(data: dict) -> None:
             _settings_mtime = SETTINGS_FILE.stat().st_mtime
         except OSError:
             _settings_mtime = None
+
+
+EVENTS_FILE    = Path(os.getenv("EVENTS_FILE", str(SETTINGS_FILE.parent / "events.json")))
+SNAPSHOT_DIR   = Path(os.getenv("SNAPSHOT_DIR", str(SETTINGS_FILE.parent / "snapshots")))
+MAX_EVENTS     = 200
+_snapshot_lock = threading.Lock()
+
+
+def load_events() -> None:
+    """Restore the event feed from disk.
+
+    Events lived only in memory, so every container update emptied the feed and
+    made it look like nothing had ever happened.
+    """
+    try:
+        stored = json.loads(EVENTS_FILE.read_text())
+    except Exception:
+        return
+    if isinstance(stored, list):
+        events.clear()
+        events.extend(stored[:MAX_EVENTS])
+        print(f"Restored {len(events)} events")
+
+
+def save_events() -> None:
+    try:
+        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        EVENTS_FILE.write_text(json.dumps(events[:MAX_EVENTS]))
+    except Exception as e:
+        print(f"Could not persist events: {e}")
+
+
+def load_snapshots() -> None:
+    """Restore the last JPEG per camera, so thumbnails survive a restart."""
+    try:
+        for image in SNAPSHOT_DIR.glob("*.jpg"):
+            snapshots[image.stem] = image.read_bytes()
+    except Exception:
+        pass
+    if snapshots:
+        print(f"Restored {len(snapshots)} snapshots")
+
+
+def save_snapshot(device_id: str, payload: bytes) -> None:
+    with _snapshot_lock:
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            (SNAPSHOT_DIR / f"{device_id}.jpg").write_bytes(payload)
+        except Exception as e:
+            print(f"Could not persist snapshot for {device_id}: {e}")
+
+
+def forget_device(device_id: str) -> None:
+    """Drop every trace of a device the user has switched off."""
+    device_states.pop(device_id, None)
+    motion_attrs.pop(device_id, None)
+    snapshots.pop(device_id, None)
+    _device_availability.pop(device_id, None)
+    _low_battery_notified.discard(device_id)
+    with _snapshot_lock:
+        (SNAPSHOT_DIR / f"{device_id}.jpg").unlink(missing_ok=True)
 
 
 def load_ring_config() -> dict:
@@ -513,6 +595,7 @@ def apply_camera_selection(selections: list) -> dict:
         if not sel.enabled:
             disabled.add(sel.device_id)
             names.pop(sel.device_id, None)
+            forget_device(sel.device_id)
             if index is not None:
                 drop.add(index)
                 match = pattern.match(lines[index].rstrip("\n"))
@@ -638,6 +721,7 @@ def setup_mqtt() -> mqtt.Client:
                 and parts[4] == "snapshot" and parts[5] == "image"):
             device_id = parts[3]
             snapshots[device_id] = msg.payload
+            save_snapshot(device_id, msg.payload)
             return
 
         # ── Text-based topics ─────────────────────────────────────────────────
@@ -673,8 +757,8 @@ def setup_mqtt() -> mqtt.Client:
                         "person_detected": person,
                     }
                     events.insert(0, event)
-                    if len(events) > 100:
-                        events.pop()
+                    del events[MAX_EVENTS:]
+                    save_events()
                     schedule(broadcast({"type": "event", "data": event}))
                     schedule(send_notification(event))
 
@@ -796,6 +880,8 @@ async def lifespan(app: FastAPI):
     ensure_go2rtc_config()
     sync_go2rtc_credentials()
     adopt_existing_install()
+    load_events()
+    load_snapshots()
     app.state.mqtt = setup_mqtt()
     yield
     app.state.mqtt.loop_stop()
@@ -827,6 +913,7 @@ class SettingsRequest(BaseModel):
     notify_on_low_battery: bool = True
     low_battery_threshold: int = 20
     notify_on_connection_lost: bool = True
+    ha_entity_filter: str = ""
 
 class TestNotificationRequest(BaseModel):
     notify_url: str = ""
@@ -1161,19 +1248,42 @@ async def setup_reset():
 
 # ── Ring auth ─────────────────────────────────────────────────────────────────
 
+def _capture_token() -> tuple[Auth, dict]:
+    """An Auth that records its token through the public updater callback.
+
+    python-ring-doorbell's third constructor argument exists exactly for this.
+    Reading `auth._token` instead worked but depended on a private attribute, so
+    a routine dependency bump could have broken Ring sign-in silently.
+    """
+    captured: dict = {}
+    auth = Auth(USER_AGENT, None, captured.update)
+    return auth, captured
+
+
+def _refresh_token_from(auth: Auth, captured: dict) -> str:
+    token = captured.get("refresh_token")
+    if token:
+        return token
+    # Older releases only populate the callback on a later refresh.
+    token = getattr(auth, "_token", {}).get("refresh_token")
+    if not token:
+        raise HTTPException(502, "Ring returned no refresh token")
+    return token
+
+
 @app.post("/api/auth/ring")
 async def ring_login(req: RingLoginRequest):
-    auth = Auth(USER_AGENT, None, lambda t: None)
+    auth, captured = _capture_token()
     try:
         await auth.async_fetch_token(req.email, req.password)
-        save_ring_token(auth._token["refresh_token"])
+        save_ring_token(_refresh_token_from(auth, captured))
         await auth.async_close()
         restart_ring_mqtt()
         return {"success": True}
     except Requires2FAError:
         sid = str(uuid.uuid4())
         prune_pending_auth()
-        pending_auth[sid] = {"auth": auth, "email": req.email,
+        pending_auth[sid] = {"auth": auth, "captured": captured, "email": req.email,
                              "password": req.password, "created": time.time()}
         return {"needs_2fa": True, "session_id": sid}
     except Exception as e:
@@ -1189,7 +1299,7 @@ async def ring_verify(req: RingVerifyRequest):
     auth: Auth = session["auth"]
     try:
         await auth.async_fetch_token(session["email"], session["password"], req.code)
-        save_ring_token(auth._token["refresh_token"])
+        save_ring_token(_refresh_token_from(auth, session.get("captured", {})))
         await auth.async_close()
         pending_auth.pop(req.session_id, None)
         restart_ring_mqtt()
@@ -1275,6 +1385,7 @@ async def get_settings():
         "notify_on_low_battery":     s.get("notify_on_low_battery", True),
         "low_battery_threshold":     s.get("low_battery_threshold", 20),
         "notify_on_connection_lost": s.get("notify_on_connection_lost", True),
+        "ha_entity_filter": s.get("ha_entity_filter", ""),
         "app_password_set": bool(s.get("app_password_hash")),
     }
 
@@ -1296,9 +1407,22 @@ async def save_settings_route(req: SettingsRequest):
         "notify_on_low_battery":     req.notify_on_low_battery,
         "low_battery_threshold":     max(1, min(100, req.low_battery_threshold)),
         "notify_on_connection_lost": req.notify_on_connection_lost,
+        "ha_entity_filter":          req.ha_entity_filter,
     }
     save_settings(updated)
     return {"success": True}
+
+
+def ha_filter_terms() -> list[str]:
+    """Substrings that mark a Home Assistant entity as interesting.
+
+    Configurable because entity names are language-specific — the default list
+    used to be hardcoded and included one German word from the author's own
+    setup, which matched nothing for anyone else.
+    """
+    raw = load_settings().get("ha_entity_filter") or ""
+    terms = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    return terms or ["ring", "doorbell"]
 
 
 @app.get("/api/ha/entities")
@@ -1314,14 +1438,14 @@ async def get_ha_entities():
             )
             if resp.status_code != 200:
                 raise HTTPException(resp.status_code, "HA API error")
-            all_states = resp.json()
-            ring_entities = [
-                e for e in all_states
-                if "ring" in e["entity_id"].lower()
-                or "doorbell" in e["entity_id"].lower()
-                or "haustür" in e["attributes"].get("friendly_name", "").lower()
+            terms = ha_filter_terms()
+            return [
+                e for e in resp.json()
+                if any(term in e["entity_id"].lower()
+                       or term in str(e.get("attributes", {})
+                                       .get("friendly_name", "")).lower()
+                       for term in terms)
             ]
-            return ring_entities
     except HTTPException:
         raise
     except Exception as e:

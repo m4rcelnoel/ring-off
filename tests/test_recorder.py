@@ -81,3 +81,109 @@ def test_recording_respects_the_ding_toggle(rec, monkeypatch):
     rec.record("abc123", "ding")
 
     assert started == []
+
+
+# ── Failure handling ──────────────────────────────────────────────────────────
+
+class FakeProc:
+    """Stands in for an ffmpeg process."""
+    def __init__(self, returncode=0, stderr=b"", writes=None, out=None):
+        self.returncode, self._stderr = returncode, stderr
+        if writes is not None and out is not None:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(writes)
+
+    def communicate(self, timeout=None):
+        return b"", self._stderr
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def test_a_nonzero_exit_is_a_failure(rec, monkeypatch, tmp_path):
+    out = tmp_path / "clip.mp4"
+    monkeypatch.setattr(rec.subprocess, "Popen",
+                        lambda *a, **k: FakeProc(returncode=1, stderr=b"Connection refused"))
+    ok, reason = rec.run_ffmpeg("cam", out, 5)
+    assert ok is False
+    assert "Connection refused" in reason
+
+
+def test_an_empty_clip_is_a_failure(rec, monkeypatch, tmp_path):
+    """ffmpeg can exit 0 having written nothing — that was logged as "saved"."""
+    out = tmp_path / "clip.mp4"
+    monkeypatch.setattr(rec.subprocess, "Popen",
+                        lambda *a, **k: FakeProc(returncode=0, writes=b"tiny", out=out))
+    ok, reason = rec.run_ffmpeg("cam", out, 5)
+    assert ok is False
+    assert "empty" in reason
+    assert not out.exists(), "the stub file should be cleaned up"
+
+
+def test_a_missing_file_is_a_failure(rec, monkeypatch, tmp_path):
+    monkeypatch.setattr(rec.subprocess, "Popen", lambda *a, **k: FakeProc(returncode=0))
+    ok, reason = rec.run_ffmpeg("cam", tmp_path / "clip.mp4", 5)
+    assert ok is False and "no file" in reason
+
+
+def test_a_real_clip_succeeds(rec, monkeypatch, tmp_path):
+    out = tmp_path / "clip.mp4"
+    payload = b"x" * (rec.MIN_CLIP_BYTES + 1)
+    monkeypatch.setattr(rec.subprocess, "Popen",
+                        lambda *a, **k: FakeProc(returncode=0, writes=payload, out=out))
+    assert rec.run_ffmpeg("cam", out, 5) == (True, "")
+
+
+def test_a_hung_ffmpeg_is_killed(rec, monkeypatch, tmp_path):
+    class Hung(FakeProc):
+        def communicate(self, timeout=None):
+            if timeout is not None:
+                raise rec.subprocess.TimeoutExpired("ffmpeg", timeout)
+            return b"", b""
+
+    monkeypatch.setattr(rec.subprocess, "Popen", lambda *a, **k: Hung())
+    ok, reason = rec.run_ffmpeg("cam", tmp_path / "clip.mp4", 1)
+    assert ok is False and "time limit" in reason
+
+
+def test_recording_retries_before_giving_up(rec, monkeypatch, tmp_path):
+    """Ring streams often are not up yet the instant an event fires."""
+    monkeypatch.setattr(rec, "RETRY_DELAY", 0)
+    monkeypatch.setattr(rec, "VIDEO_PATH", tmp_path)
+    attempts = []
+
+    def fail(device_id, out, duration):
+        attempts.append(device_id)
+        return False, "stream not ready"
+
+    monkeypatch.setattr(rec, "run_ffmpeg", fail)
+    rec.record("cam", "motion")
+    for t in rec.threading.enumerate():
+        if t is not rec.threading.current_thread():
+            t.join(timeout=5)
+
+    assert len(attempts) == rec.RECORD_ATTEMPTS
+
+
+def test_a_full_disk_stops_recording(rec, monkeypatch, tmp_path):
+    monkeypatch.setattr(rec, "VIDEO_PATH", tmp_path)
+    monkeypatch.setattr(rec, "free_bytes", lambda path: 1024)
+    started = []
+    monkeypatch.setattr(rec, "run_ffmpeg", lambda *a: started.append(a) or (True, ""))
+
+    rec.record("cam", "motion")
+
+    assert started == []
+
+
+def test_unknown_free_space_does_not_block_recording(rec, monkeypatch, tmp_path):
+    monkeypatch.setattr(rec, "VIDEO_PATH", tmp_path)
+    monkeypatch.setattr(rec, "free_bytes", lambda path: -1)
+    monkeypatch.setattr(rec, "run_ffmpeg", lambda *a: (True, ""))
+    rec.record("cam", "motion")
+    for t in rec.threading.enumerate():
+        if t is not rec.threading.current_thread():
+            t.join(timeout=5)

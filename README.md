@@ -193,6 +193,9 @@ These are worth knowing if you deviate from the default compose setup:
 | `RING_MQTT_CONFIG` | `/ring-mqtt-data/config.json` | ring-mqtt's config, read for the livestream credentials |
 | `RING_MQTT_STATE` | alongside the config | ring-mqtt's state file, where the Ring refresh token is written |
 | `STATIC_DIR` | `static` | Built frontend. Skipped when absent, so the backend can run without it in development |
+| `TZ` | `UTC` | Timezone for clip filenames and logs. Set it to match the UI, e.g. `TZ=Europe/Berlin` |
+| `EVENTS_FILE` | alongside settings | Persisted event feed |
+| `SNAPSHOT_DIR` | alongside settings | Persisted camera thumbnails |
 
 ### Settings (web UI → Settings gear)
 
@@ -554,6 +557,22 @@ docker compose restart mosquitto
 ---
 
 ## Development
+
+### Branches
+
+Work lands on `staging` first; `main` only ever receives merges from it.
+
+| Branch | CI | Image tag |
+|---|---|---|
+| `staging` | tests + typecheck, then build | `ghcr.io/…:staging` |
+| `main` | tests + typecheck, then build | `ghcr.io/…:main` and `:latest` |
+| tag `v*` | — | `:1.3.0`, `:1.3`, `:latest` + GitHub release |
+
+`main` is protected: no direct pushes, and the `Tests` job has to be green before a pull request can be merged. To try a change before it reaches `main`, point `docker-compose.yml` at the staging image:
+
+```yaml
+image: ghcr.io/m4rcelnoel/ring-off-webapp:staging
+```
 
 ### Build from source (all services)
 

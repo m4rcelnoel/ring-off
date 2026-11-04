@@ -287,3 +287,64 @@ def test_callers_cannot_mutate_the_cache(app):
     first = app.load_settings()
     first["record_duration"] = 999
     assert app.load_settings()["record_duration"] == 90
+
+
+# ── Version ───────────────────────────────────────────────────────────────────
+
+def test_the_ring_user_agent_carries_the_app_version(app):
+    """It was pinned at "ring-off/1.1" and never moved again."""
+    assert app.USER_AGENT == f"ring-off/{app.APP_VERSION}"
+    assert "1.1" not in app.USER_AGENT or app.APP_VERSION == "1.1"
+
+
+def test_the_version_can_be_overridden_by_the_environment(app, monkeypatch):
+    monkeypatch.setenv("APP_VERSION", "9.9.9")
+    assert app._app_version() == "9.9.9"
+
+
+def test_the_version_falls_back_to_dev(app, monkeypatch):
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.setattr(app, "__file__", "/nonexistent/main.py")
+    assert app._app_version() == "dev"
+
+
+# ── Home Assistant entity filter ──────────────────────────────────────────────
+
+def test_the_default_filter_is_language_neutral(app):
+    """It used to hardcode one German word from the author's own setup."""
+    assert app.ha_filter_terms() == ["ring", "doorbell"]
+
+
+def test_the_filter_is_configurable(app):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "ha_entity_filter": "Haustür, Klingel"})
+    assert app.ha_filter_terms() == ["haustür", "klingel"]
+
+
+def test_a_blank_filter_falls_back_to_the_default(app):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "ha_entity_filter": "  ,  "})
+    assert app.ha_filter_terms() == ["ring", "doorbell"]
+
+
+def test_entities_are_matched_on_id_and_friendly_name(app, monkeypatch):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "ha_url": "http://ha:8123",
+                       "ha_token": "t", "ha_entity_filter": "haustür"})
+
+    states = [
+        {"entity_id": "binary_sensor.haustuer", "attributes": {"friendly_name": "Haustür"}},
+        {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen"}},
+        {"entity_id": "sensor.haustür_battery", "attributes": {}},
+    ]
+
+    class Response:
+        status_code = 200
+        @staticmethod
+        def json(): return states
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None): return Response()
+
+    monkeypatch.setattr(app.httpx, "AsyncClient", lambda **kw: Client())
+    found = {e["entity_id"] for e in asyncio.run(app.get_ha_entities())}
+    assert found == {"binary_sensor.haustuer", "sensor.haustür_battery"}

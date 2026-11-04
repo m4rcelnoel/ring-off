@@ -19,6 +19,9 @@ venv/
 # Node
 webapp/frontend/node_modules/
 webapp/frontend/dist/
+# The Docker build uses `npm ci`, so package-lock.json is the lockfile of record.
+# A second one from a local bun install would only drift.
+webapp/frontend/bun.lock
 
 # macOS
 .DS_Store

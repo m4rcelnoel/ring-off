@@ -56,6 +56,7 @@ export interface Settings {
   notify_on_low_battery: boolean
   low_battery_threshold: number
   notify_on_connection_lost: boolean
+  ha_entity_filter: string
   app_password_set: boolean
 }
 

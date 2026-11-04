@@ -41,9 +41,9 @@ def test_a_ding_is_never_marked_as_a_person(app, mqtt_handler):
 
 
 def test_event_history_is_capped(app, mqtt_handler):
-    for i in range(120):
+    for i in range(app.MAX_EVENTS + 20):
         mqtt_handler(f"ring/loc1/camera/cam{i}/motion/state", "ON")
-    assert len(app.events) == 100
+    assert len(app.events) == app.MAX_EVENTS
 
 
 def test_newest_event_is_first(app, mqtt_handler):

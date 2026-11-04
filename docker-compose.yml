@@ -101,6 +101,7 @@ services:
       - RTSP_HOST=ring-mqtt
       - RTSP_PORT=8554
       - VIDEO_PATH=/videos
+      - TZ=${TZ:-UTC}
     depends_on:
       mosquitto:
         condition: service_healthy
@@ -128,6 +129,8 @@ services:
       - RING_MQTT_CONFIG=/ring-mqtt-data/config.json
       - VIDEO_PATH=/videos
       - SETTINGS_FILE=/app/data/settings.json
+      # Clip filenames use local time. Without this a container clock is UTC.
+      - TZ=${TZ:-UTC}
     depends_on:
       mosquitto:
         condition: service_healthy

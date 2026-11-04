@@ -55,6 +55,7 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
         notify_on_low_battery:     settings.notify_on_low_battery,
         low_battery_threshold:     settings.low_battery_threshold,
         notify_on_connection_lost: settings.notify_on_connection_lost,
+        ha_entity_filter:          settings.ha_entity_filter,
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -284,6 +285,18 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
                 value={haToken} onChange={e => setHaToken(e.target.value)} />
               <p className="text-xs text-muted-foreground">
                 Create one in HA → Profile → Long-Lived Access Tokens
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ha-filter">Entity Filter</Label>
+              <Input id="ha-filter" placeholder="ring, doorbell"
+                value={settings?.ha_entity_filter ?? ''}
+                onChange={e => setSettings(s => s ? { ...s, ha_entity_filter: e.target.value } : s)} />
+              <p className="text-xs text-muted-foreground">
+                Comma-separated terms matched against entity ids and friendly names.
+                Leave blank for <code className="text-foreground">ring, doorbell</code> —
+                add your own language's words if your entities are not named in English.
               </p>
             </div>
           </div>

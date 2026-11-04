@@ -76,6 +76,64 @@ def rtsp_url(device_id: str) -> str:
     return f"rtsp://{userinfo}{RTSP_HOST}:{RTSP_PORT}/{device_id}_live"
 
 
+RECORD_ATTEMPTS = 3
+RETRY_DELAY     = 4                       # Ring needs a moment to bring the stream up
+MIN_CLIP_BYTES  = 32 * 1024               # smaller than this is not real video
+MIN_FREE_BYTES  = 512 * 1024 * 1024       # refuse to fill the disk completely
+
+
+def free_bytes(path: Path) -> int:
+    """Free space on the recordings volume, or -1 if it cannot be determined."""
+    try:
+        stat = os.statvfs(path)
+        return stat.f_bavail * stat.f_frsize
+    except OSError:
+        return -1
+
+
+def run_ffmpeg(device_id: str, out: Path, duration: int) -> tuple[bool, str]:
+    """Record one clip. Returns (ok, reason) — the reason is empty on success."""
+    cmd = [
+        "ffmpeg", "-loglevel", "warning",
+        "-rtsp_transport", "tcp",
+        "-timeout", "15000000",           # give up on a dead RTSP socket
+        "-i", rtsp_url(device_id),
+        "-t", str(duration),
+        "-c", "copy",
+        "-y", str(out),
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except Exception as exc:
+        return False, f"could not start ffmpeg: {exc}"
+
+    with _lock:
+        _active[device_id] = proc
+    try:
+        # Wall-clock bound: -t alone does not save us if the input never opens.
+        _, stderr = proc.communicate(timeout=duration + 30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return False, "ffmpeg overran its time limit and was killed"
+    finally:
+        with _lock:
+            _active.pop(device_id, None)
+
+    if proc.returncode != 0:
+        detail = (stderr or b"").decode(errors="replace").strip().splitlines()
+        return False, (detail[-1] if detail else f"exit code {proc.returncode}")
+
+    # A zero-exit ffmpeg can still leave an empty file when the stream drops
+    # immediately — that used to be logged as "saved".
+    if not out.exists():
+        return False, "ffmpeg wrote no file"
+    if out.stat().st_size < MIN_CLIP_BYTES:
+        out.unlink(missing_ok=True)
+        return False, "clip was empty"
+    return True, ""
+
+
 def record(device_id: str, kind: str) -> None:
     settings = load_settings()
 
@@ -97,32 +155,33 @@ def record(device_id: str, kind: str) -> None:
     cam_dir = VIDEO_PATH / device_id
     cam_dir.mkdir(parents=True, exist_ok=True)
 
+    free = free_bytes(VIDEO_PATH)
+    if 0 <= free < MIN_FREE_BYTES:
+        print(f"[{device_id}] only {free // 1024 // 1024} MB free — not recording")
+        return
+
+    # Local time, so filenames line up with what the dashboard shows. Set TZ on
+    # the container; without it a container clock is UTC.
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = cam_dir / f"{ts}_{kind}.mp4"
-
-    cmd = [
-        "ffmpeg", "-loglevel", "warning",
-        "-rtsp_transport", "tcp",
-        "-i", rtsp_url(device_id),
-        "-t", str(duration),
-        "-c", "copy",
-        str(out),
-    ]
 
     print(f"[{device_id}] {kind} → recording {out.name} ({duration}s)")
 
     def run() -> None:
-        try:
-            proc = subprocess.Popen(cmd)
-            with _lock:
-                _active[device_id] = proc
-            proc.wait()
-            print(f"[{device_id}] saved {out.name}")
-        except Exception as exc:
-            print(f"[{device_id}] ffmpeg error: {exc}")
-        finally:
-            with _lock:
-                _active.pop(device_id, None)
+        for attempt in range(1, RECORD_ATTEMPTS + 1):
+            ok, reason = run_ffmpeg(device_id, out, duration)
+            if ok:
+                # Defensive: a retention sweep or an external tool could have
+                # removed it already, and this runs on a daemon thread where an
+                # exception would vanish.
+                size = out.stat().st_size // 1024 if out.exists() else 0
+                print(f"[{device_id}] saved {out.name} ({size} KB)")
+                return
+            if attempt < RECORD_ATTEMPTS:
+                print(f"[{device_id}] attempt {attempt} failed ({reason}) — retrying")
+                time.sleep(RETRY_DELAY)
+            else:
+                print(f"[{device_id}] giving up after {RECORD_ATTEMPTS} attempts: {reason}")
 
     threading.Thread(target=run, daemon=True).start()
 

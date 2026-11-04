@@ -25,6 +25,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "RING_MQTT_STATE", tmp_path / "ring" / "ring-state.json")
     monkeypatch.setattr(main, "SETTINGS_FILE", tmp_path / "webapp" / "settings.json")
     monkeypatch.setattr(main, "VIDEO_PATH", tmp_path / "videos")
+    monkeypatch.setattr(main, "EVENTS_FILE", tmp_path / "webapp" / "events.json")
+    monkeypatch.setattr(main, "SNAPSHOT_DIR", tmp_path / "webapp" / "snapshots")
     monkeypatch.setattr(main, "RTSP_USER", "")
     monkeypatch.setattr(main, "RTSP_PASS", "")
 
