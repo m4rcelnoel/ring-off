@@ -103,7 +103,7 @@ export default function CameraCard({ camera, onExpand, deviceState }: Props) {
   return (
     <div className="group relative rounded-xl border border-border bg-card overflow-hidden hover:border-primary/50 transition-colors">
       {/* Video area */}
-      <div className="relative aspect-video bg-black">
+      <div className="relative aspect-square bg-black">
         {active ? (
           <VideoPlayer streamName={camera.stream} />
         ) : (
