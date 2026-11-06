@@ -93,7 +93,9 @@ export default function Dashboard() {
           </div>
 
           {loadingCams ? (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <Skeleton className="aspect-video rounded-xl" />
+              <Skeleton className="aspect-video rounded-xl" />
               <Skeleton className="aspect-video rounded-xl" />
               <Skeleton className="aspect-video rounded-xl" />
             </div>
@@ -102,7 +104,7 @@ export default function Dashboard() {
               <span className="text-sm">No cameras found — is ring-mqtt running?</span>
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {cameras.map(cam => (
                 <CameraCard
                   key={cam.id}
