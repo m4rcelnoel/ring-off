@@ -48,7 +48,8 @@ function VideoModal({ clip, cameraName, onClose }: VideoModalProps) {
           src={`/recordings/files/${clip.path}`}
           controls
           autoPlay
-          className="w-full aspect-video bg-black"
+          className="w-full h-auto max-h-[80vh] object-contain bg-black"
+          style={{ aspectRatio: 'auto' }}
         />
       </div>
     </div>

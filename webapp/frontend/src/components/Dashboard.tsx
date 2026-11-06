@@ -197,7 +197,7 @@ export default function Dashboard() {
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            <div className="aspect-video">
+            <div className="aspect-square">
               <VideoPlayer streamName={expandedCamera.stream} />
             </div>
           </div>
