@@ -106,6 +106,7 @@ def record(device_id: str, kind: str) -> None:
         "-i", rtsp_url(device_id),
         "-t", str(duration),
         "-c", "copy",
+        "-movflags", "+faststart",
         str(out),
     ]
 
