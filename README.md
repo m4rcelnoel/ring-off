@@ -154,6 +154,8 @@ git pull
 
 If you would rather keep your edited file, `git stash && git pull && git stash pop` re-applies your changes on top of the update.
 
+**Installed from a release ZIP instead of git?** Extract the new ZIP into a separate folder and copy over only `docker-compose.yml` and the files in `config/` that it contains — never `data/` or your own `config/go2rtc.yaml`. Keep your own changes in `docker-compose.override.yml` there as well, so the copied `docker-compose.yml` does not undo them.
+
 ---
 
 ## Stream Setup
@@ -599,12 +601,14 @@ Work lands on `staging` first; `main` only ever receives merges from it.
 |---|---|---|
 | `staging` | tests + typecheck, then build | `ghcr.io/…:staging` |
 | `main` | tests + typecheck, then build | `ghcr.io/…:main` and `:latest` |
-| tag `v*` | — | `:1.3.0`, `:1.3`, `:latest` + GitHub release |
+| tag `v*` | — | `:1.4.0`, `:1.4` + GitHub release |
 
-`main` is protected: no direct pushes, and the `Tests` job has to be green before a pull request can be merged. To try a change before it reaches `main`, point `docker-compose.yml` at the staging image:
+`main` is protected: no direct pushes, and the `Tests` job has to be green before a pull request can be merged. To try a change before it reaches `main`, point the images at `:staging` in `docker-compose.override.yml`:
 
 ```yaml
-image: ghcr.io/m4rcelnoel/ring-off-webapp:staging
+services:
+  webapp:   { image: ghcr.io/m4rcelnoel/ring-off-webapp:staging }
+  recorder: { image: ghcr.io/m4rcelnoel/ring-off-recorder:staging }
 ```
 
 ### Build from source (all services)

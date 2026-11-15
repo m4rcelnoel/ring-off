@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-15
+
 ### Upgrading
 
-**Ports 1883, 1984, 8554 and 55123 are no longer published.** Only 8080 and 8555 are. If you point Home Assistant at the bundled broker, or open the go2rtc UI directly, re-add the mapping you need in `docker-compose.yml` — and set a Mosquitto password before exposing 1883.
+**Ports 1883, 1984, 8554 and 55123 are no longer published.** Only 8080 and 8555 are. If you point Home Assistant at the bundled broker, or open the go2rtc UI directly, re-add the mapping you need in `docker-compose.override.yml` (see the example file) — and set a Mosquitto password before exposing 1883.
 
 **The Docker socket is no longer mounted.** Nothing needs it: after a Ring sign-in, `config/ring-mqtt-init.sh` restarts ring-mqtt inside its own container once the token appears. Uncomment the mount to get the old behaviour back.
 
@@ -62,6 +64,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 ### Changed
 - **Settings are cached** until `settings.json` changes on disk. The auth middleware read and parsed it on every single HTTP request — including every MJPEG frame — and the MQTT handler did the same per message. Hand-editing the file still works, via an mtime check.
+
+### Known issues
+- **Slow-waking battery cameras may not stream** — some battery doorbells take 20 seconds or more to deliver the first frame after a livestream is requested, while go2rtc gives up on the RTSP connection after a few seconds, so the player stays black. Cameras that wake faster are unaffected. This also affected 1.3.0.
 
 ## [1.3.0] - 2026-08-05
 
