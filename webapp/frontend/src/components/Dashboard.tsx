@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Settings, RefreshCw, Wifi, WifiOff, Bell, PersonStanding, Video, X } from 'lucide-react'
+import { Settings, RefreshCw, Wifi, WifiOff, Bell, PersonStanding, Video, X, Home } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
@@ -10,12 +10,19 @@ import EventsFeed from '@/components/EventsFeed'
 import HAPanel from '@/components/HAPanel'
 import RecordingsPanel from '@/components/RecordingsPanel'
 import SettingsSheet from '@/components/SettingsSheet'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useEvents } from '@/hooks/useEvents'
 import { api } from '@/lib/api'
 import { APP_VERSION, APP_AUTHOR, APP_YEAR, APP_REPO } from '@/version'
 import type { Camera, RingEvent } from '@/types'
 
 type SidebarTab = 'events' | 'recordings' | 'ha'
+
+const SIDEBAR_TABS = [
+  { key: 'events',     label: 'Events',     icon: Bell },
+  { key: 'recordings', label: 'Recordings', icon: Video },
+  { key: 'ha',         label: 'HA',         icon: Home },
+] as const
 
 interface Toast { id: string; event: RingEvent; camera?: Camera }
 
@@ -26,6 +33,13 @@ export default function Dashboard() {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [expandedCamera, setExpandedCamera] = useState<Camera | null>(null)
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('events')
+  // Below lg the sidebar has no room; its panels open full-screen instead.
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false)
+
+  const openMobilePanel = (tab: SidebarTab) => {
+    setSidebarTab(tab)
+    setMobilePanelOpen(true)
+  }
   const toastTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   const { events, deviceStates, connected } = useEvents((ev) => {
@@ -56,7 +70,7 @@ export default function Dashboard() {
   const chimes = Object.values(deviceStates).filter(d => d.type === 'chime')
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-screen h-[100dvh] flex-col">
 
       {/* Header */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/80 backdrop-blur px-4 lg:px-6">
@@ -87,7 +101,7 @@ export default function Dashboard() {
       <div className="flex flex-1 overflow-hidden">
 
         {/* Camera grid */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className="flex-1 overflow-y-auto p-4 pb-24 lg:p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-sm text-muted-foreground uppercase tracking-widest">Cameras</h2>
             <span className="text-xs text-muted-foreground">{cameras.length} device{cameras.length !== 1 ? 's' : ''}</span>
@@ -138,39 +152,9 @@ export default function Dashboard() {
         {/* Sidebar */}
         <aside className="hidden lg:flex w-80 shrink-0 flex-col border-l border-border overflow-hidden">
 
-          {/* Tab bar */}
-          <div className="flex shrink-0 border-b border-border">
-            {([
-              { key: 'events',     label: 'Events',      icon: Bell },
-              { key: 'recordings', label: 'Recordings',  icon: Video },
-              { key: 'ha',         label: 'HA',          icon: null },
-            ] as const).map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setSidebarTab(tab.key)}
-                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 ${
-                  sidebarTab === tab.key
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {tab.icon && <tab.icon className="h-3.5 w-3.5" />}
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
+          <SidebarTabBar tab={sidebarTab} onSelect={setSidebarTab} />
           <div className="flex-1 overflow-y-auto">
-            {sidebarTab === 'events' && (
-              <EventsFeed events={events} cameras={cameras} />
-            )}
-            {sidebarTab === 'recordings' && (
-              <RecordingsPanel cameras={cameras} />
-            )}
-            {sidebarTab === 'ha' && (
-              <HAPanel />
-            )}
+            <SidebarContent tab={sidebarTab} events={events} cameras={cameras} />
           </div>
 
           {/* Footer */}
@@ -185,6 +169,39 @@ export default function Dashboard() {
           </div>
         </aside>
       </div>
+
+      {/* Mobile: bottom navigation. Without it, phones had no way to reach
+          events or recordings — the sidebar is hidden below lg. */}
+      <nav className="lg:hidden fixed inset-x-0 bottom-0 z-30 flex border-t border-border bg-card/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+        {SIDEBAR_TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => openMobilePanel(tab.key)}
+            className="flex-1 flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium text-muted-foreground active:text-foreground"
+          >
+            <tab.icon className="h-5 w-5" />
+            {tab.label}
+            {tab.key === 'events' && events.length > 0 && (
+              <span className="sr-only">({events.length})</span>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      <Sheet open={mobilePanelOpen} onOpenChange={setMobilePanelOpen}>
+        <SheetContent className="lg:hidden" aria-describedby={undefined}>
+          <div className="flex h-14 shrink-0 items-center border-b border-border px-4 pr-12">
+            <SheetTitle className="text-base">Ring Off</SheetTitle>
+          </div>
+          <SidebarTabBar tab={sidebarTab} onSelect={setSidebarTab} />
+          <div className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
+            <SidebarContent tab={sidebarTab} events={events} cameras={cameras} />
+          </div>
+          <div className="shrink-0 px-4 py-3 border-t border-border text-[10px] text-muted-foreground/50">
+            {APP_VERSION} · © {APP_YEAR} {APP_AUTHOR}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* Camera fullscreen modal */}
       {expandedCamera && (
@@ -204,7 +221,7 @@ export default function Dashboard() {
       )}
 
       {/* Toast notifications */}
-      <div className="fixed bottom-4 right-4 z-40 flex flex-col gap-2 items-end">
+      <div className="fixed bottom-20 right-4 lg:bottom-4 z-40 flex flex-col gap-2 items-end">
         {toasts.map(t => {
           const isPerson = t.event.kind === 'motion' && t.event.person_detected
           return (
@@ -254,4 +271,36 @@ function ExpandedVideo({ stream }: { stream: string }) {
       <VideoPlayer streamName={stream} />
     </div>
   )
+}
+
+
+function SidebarTabBar({ tab, onSelect }: { tab: SidebarTab; onSelect: (tab: SidebarTab) => void }) {
+  return (
+    <div className="flex shrink-0 border-b border-border">
+      {SIDEBAR_TABS.map(t => (
+        <button
+          key={t.key}
+          onClick={() => onSelect(t.key)}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 ${
+            tab === t.key
+              ? 'border-primary text-foreground'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <t.icon className="h-3.5 w-3.5" />
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function SidebarContent({ tab, events, cameras }: {
+  tab: SidebarTab
+  events: RingEvent[]
+  cameras: Camera[]
+}) {
+  if (tab === 'events') return <EventsFeed events={events} cameras={cameras} />
+  if (tab === 'recordings') return <RecordingsPanel cameras={cameras} />
+  return <HAPanel />
 }

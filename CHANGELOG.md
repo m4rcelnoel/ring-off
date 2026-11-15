@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Events, recordings and the HA panel were unreachable on phones** — the sidebar is hidden below 1024 px and nothing replaced it. Phones and narrow windows now get a bottom navigation bar that opens each panel full-screen. The layout also uses the dynamic viewport height, so mobile browser toolbars no longer cut off the bottom of the page, and toasts sit above the navigation bar.
+
+- **Recordings could be deleted unseen on touch screens** — the play and delete buttons only appeared on hover, but stayed tappable while invisible. They are now always shown on touch devices and narrow screens, tapping a recording plays it, and deleting asks for confirmation.
+- **Browsers kept showing the old UI after an update** — `index.html` was served without `Cache-Control`, so browsers cached it heuristically and loaded the previous bundle (or a blank page once it was gone). It is now revalidated on every load; hashed assets are cached permanently. After updating to this version, reload the page once.
+
+### Changed
+- **Ring Video Doorbell (2nd Gen)** added to the compatible hardware list, reported working by a user.
+
 ## [1.4.0] - 2026-11-15
 
 ### Upgrading

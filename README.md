@@ -13,6 +13,7 @@ Self-hosted Ring doorbell management: live camera streams, motion & doorbell eve
 | Device | Status |
 |---|---|
 | Ring Video Doorbell 3 | ✅ Tested |
+| Ring Video Doorbell (2nd Gen) | ✅ Reported working by a user |
 
 Other Ring cameras that work with [ring-mqtt](https://github.com/tsightler/ring-mqtt) should work too — battery cameras, wired doorbells, and indoor/outdoor cameras. If you've tested another model, feel free to open a PR.
 
