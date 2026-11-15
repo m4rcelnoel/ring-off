@@ -72,6 +72,8 @@ def mqtt_handler(app, monkeypatch):
         raise OSError("no broker in tests")
 
     monkeypatch.setattr(mqtt.Client, "connect", refuse)
+    monkeypatch.setattr(mqtt.Client, "connect_async", refuse)
+    monkeypatch.setattr(mqtt.Client, "loop_start", lambda self: None)
     client = app.setup_mqtt()
 
     class Msg:

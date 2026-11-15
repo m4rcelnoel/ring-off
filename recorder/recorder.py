@@ -47,6 +47,12 @@ def rtsp_credentials() -> tuple[str, str]:
 
 # Track active recordings per device to avoid duplicates
 _active: dict[str, subprocess.Popen] = {}
+# Devices with a recording job in flight, from the moment it is accepted until
+# its last retry ends. _active alone left gaps — before the worker thread had
+# started ffmpeg, and during the sleep between retries — in which a second
+# event (motion and ding arrive together on a doorbell press) started a second
+# ffmpeg on the same stream.
+_busy: set[str] = set()
 _lock = threading.Lock()
 
 
@@ -100,6 +106,9 @@ def run_ffmpeg(device_id: str, out: Path, duration: int) -> tuple[bool, str]:
         "-i", rtsp_url(device_id),
         "-t", str(duration),
         "-c", "copy",
+        # Index (moov) at the front: without it the browser player shows the
+        # first frame and stalls, because the index sits behind all the media.
+        "-movflags", "+faststart",
         "-y", str(out),
     ]
     try:
@@ -134,6 +143,11 @@ def run_ffmpeg(device_id: str, out: Path, duration: int) -> tuple[bool, str]:
     return True, ""
 
 
+def _release(device_id: str) -> None:
+    with _lock:
+        _busy.discard(device_id)
+
+
 def record(device_id: str, kind: str) -> None:
     settings = load_settings()
 
@@ -147,16 +161,22 @@ def record(device_id: str, kind: str) -> None:
     duration = int(settings.get("record_duration", 60))
 
     with _lock:
-        proc = _active.get(device_id)
-        if proc and proc.poll() is None:
+        if device_id in _busy:
             print(f"[{device_id}] already recording, skipping")
             return
+        _busy.add(device_id)
 
-    cam_dir = VIDEO_PATH / device_id
-    cam_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cam_dir = VIDEO_PATH / device_id
+        cam_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _release(device_id)
+        print(f"[{device_id}] cannot create {VIDEO_PATH / device_id}: {exc}")
+        return
 
     free = free_bytes(VIDEO_PATH)
     if 0 <= free < MIN_FREE_BYTES:
+        _release(device_id)
         print(f"[{device_id}] only {free // 1024 // 1024} MB free — not recording")
         return
 
@@ -168,6 +188,12 @@ def record(device_id: str, kind: str) -> None:
     print(f"[{device_id}] {kind} → recording {out.name} ({duration}s)")
 
     def run() -> None:
+        try:
+            _record_with_retries(device_id, out)
+        finally:
+            _release(device_id)
+
+    def _record_with_retries(device_id: str, out: Path) -> None:
         for attempt in range(1, RECORD_ATTEMPTS + 1):
             ok, reason = run_ffmpeg(device_id, out, duration)
             if ok:
@@ -217,13 +243,18 @@ def on_connect(client: mqtt.Client, userdata, flags, reason_code, properties=Non
 
 
 def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
-    if msg.payload.decode().strip() != "ON":
+    # errors="replace": an exception here propagates out of loop_forever() and
+    # takes the whole recorder down.
+    if msg.payload.decode("utf-8", errors="replace").strip() != "ON":
         return
     # ring/<loc>/camera/<device_id>/motion|ding/state
     parts = msg.topic.split("/")
     if len(parts) < 6:
         return
-    record(device_id=parts[3], kind=parts[4])
+    try:
+        record(device_id=parts[3], kind=parts[4])
+    except Exception as exc:
+        print(f"[{parts[3]}] could not start recording: {exc}")
 
 
 def main() -> None:

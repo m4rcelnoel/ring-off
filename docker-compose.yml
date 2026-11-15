@@ -84,8 +84,8 @@ services:
       #
       # It was used to restart ring-mqtt after a Ring sign-in and to restart
       # go2rtc when a camera was discovered. Neither is required any more:
-      # go2rtc is updated over its REST API, and ring-mqtt retries authentication
-      # by itself within about a minute, so setup just takes a little longer.
+      # go2rtc is updated over its REST API, and config/ring-mqtt-init.sh restarts
+      # ring-mqtt from inside its own container once a Ring token appears.
       #
       # Uncomment for an immediate restart instead of that wait:
       # - /var/run/docker.sock:/var/run/docker.sock
@@ -102,6 +102,10 @@ services:
       - RTSP_PORT=8554
       - VIDEO_PATH=/videos
       - TZ=${TZ:-UTC}
+      # Address browsers use to reach port 8555 for WebRTC. Leave unset: it
+      # defaults to the host name you open Ring Off with. Only needed behind a
+      # reverse proxy that runs on a different machine than this stack.
+      # - WEBRTC_CANDIDATE_HOST=192.168.1.20
     depends_on:
       mosquitto:
         condition: service_healthy

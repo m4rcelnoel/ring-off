@@ -33,17 +33,25 @@ function registerVideoRtc(): Promise<boolean> {
   return registration
 }
 
-export function useVideoRtc() {
-  const [ready, setReady] = useState(
+export type VideoRtcState = 'loading' | 'ready' | 'failed'
+
+/**
+ * 'loading' is a state of its own: callers used to treat "not ready yet" as
+ * "unavailable" and start the MJPEG fallback for the split second before the
+ * script arrived — and that fallback request outlived the switch to WebRTC.
+ */
+export function useVideoRtc(): VideoRtcState {
+  const [state, setState] = useState<VideoRtcState>(
     () => typeof customElements !== 'undefined' && customElements.get('video-rtc') !== undefined
+      ? 'ready' : 'loading'
   )
 
   useEffect(() => {
-    if (ready) return
+    if (state !== 'loading') return
     let cancelled = false
-    registerVideoRtc().then(ok => { if (ok && !cancelled) setReady(true) })
+    registerVideoRtc().then(ok => { if (!cancelled) setState(ok ? 'ready' : 'failed') })
     return () => { cancelled = true }
-  }, [ready])
+  }, [state])
 
-  return ready
+  return state
 }

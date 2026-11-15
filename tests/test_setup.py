@@ -271,3 +271,13 @@ def test_setting_a_password_would_lock_setup_completion(app):
 
     session.post("/api/app/login", json={"password": "hunter2"})
     assert session.post("/api/setup/complete", json={}).status_code == 200
+
+
+def test_ring_mqtt_without_a_token_does_not_block_setup(app, monkeypatch):
+    """Before sign-in ring-mqtt serves only its web UI; RTSP comes up afterwards."""
+    monkeypatch.setattr(app, "_mqtt_connected", True)
+    monkeypatch.setattr(app, "_tcp_open",
+                        lambda host, port, timeout=2.0: str(port) == app.RING_MQTT_UI_PORT)
+    result = get(app.setup_preflight())
+    assert next(c for c in result["checks"] if c["key"] == "ring_mqtt")["ok"] is True
+    assert result["ok"] is True

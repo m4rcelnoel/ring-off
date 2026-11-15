@@ -5,6 +5,9 @@
 # Copy config/go2rtc.yaml.example → config/go2rtc.yaml and fill in your device IDs
 config/go2rtc.yaml
 
+# Local Compose changes (NAS paths, extra ports …) — see docker-compose.override.yml.example
+docker-compose.override.yml
+
 # Runtime data (created automatically on first run)
 data/
 

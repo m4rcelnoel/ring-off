@@ -187,3 +187,56 @@ def test_unknown_free_space_does_not_block_recording(rec, monkeypatch, tmp_path)
     for t in rec.threading.enumerate():
         if t is not rec.threading.current_thread():
             t.join(timeout=5)
+
+
+def test_a_second_event_during_retries_does_not_start_a_second_recording(rec, monkeypatch, tmp_path):
+    """Motion and ding arrive together on a doorbell press; one ffmpeg per stream."""
+    monkeypatch.setattr(rec, "VIDEO_PATH", tmp_path)
+    monkeypatch.setattr(rec, "free_bytes", lambda path: -1)
+    release = rec.threading.Event()
+    started = []
+
+    def slow(device_id, out, duration):
+        started.append(device_id)
+        release.wait(5)
+        return True, ""
+
+    monkeypatch.setattr(rec, "run_ffmpeg", slow)
+    rec.record("cam", "motion")
+    rec.record("cam", "ding")
+    release.set()
+    for t in rec.threading.enumerate():
+        if t is not rec.threading.current_thread():
+            t.join(timeout=5)
+
+    assert started == ["cam"]
+    # Released afterwards, so the next event records again.
+    assert "cam" not in rec._busy
+
+
+def test_a_non_utf8_payload_does_not_crash_the_recorder(rec):
+    class Msg:
+        topic = "ring/loc/camera/cam/motion/state"
+        payload = b"\xff\xfe"
+
+    rec.on_message(None, None, Msg())     # must not raise
+
+
+def test_clips_are_written_with_faststart(rec, monkeypatch, tmp_path):
+    """Browsers stall on MP4s whose index sits at the end (PR #2)."""
+    seen = {}
+
+    class Proc:
+        returncode = 1
+        def communicate(self, timeout=None):
+            return b"", b"stop"
+
+    def popen(cmd, **kw):
+        seen["cmd"] = cmd
+        return Proc()
+
+    monkeypatch.setattr(rec.subprocess, "Popen", popen)
+    rec.run_ffmpeg("cam", tmp_path / "x.mp4", 5)
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-movflags") + 1] == "+faststart"
+    assert cmd.index("-movflags") < cmd.index(str(tmp_path / "x.mp4"))

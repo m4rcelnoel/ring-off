@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Ports 1883, 1984, 8554 and 55123 are no longer published.** Only 8080 and 8555 are. If you point Home Assistant at the bundled broker, or open the go2rtc UI directly, re-add the mapping you need in `docker-compose.yml` — and set a Mosquitto password before exposing 1883.
 
-**The Docker socket is no longer mounted.** Nothing needs it; setup may just wait up to a minute for ring-mqtt to retry authentication instead of being restarted. Uncomment the mount to get the old behaviour back.
+**The Docker socket is no longer mounted.** Nothing needs it: after a Ring sign-in, `config/ring-mqtt-init.sh` restarts ring-mqtt inside its own container once the token appears. Uncomment the mount to get the old behaviour back.
 
 For development against a host-run backend, `docker-compose.dev.yml` republishes the internal ports on `127.0.0.1`:
 
@@ -19,16 +19,39 @@ For development against a host-run backend, `docker-compose.dev.yml` republishes
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
+**Logged-in browsers are signed out once** — sessions are held in memory, so the update ends them. Sign in again with the same password.
+
+**Anything that used ports 1883 or 8554 directly loses access** — Home Assistant pointed at the bundled broker, or Frigate/another NVR pulling `rtsp://<host>:8554/…`. Re-publish the port in `docker-compose.override.yml` (see the example file).
+
+**Edited `docker-compose.yml`? Move your changes to `docker-compose.override.yml`** before `git pull`, or the pull stops with a merge error. See *Updating* in the README.
+
 ### Security
 
 - **Internal ports are closed** — Mosquitto accepts anonymous connections and ring-mqtt's token UI has no authentication, so publishing them exposed every Ring topic and the RTSP streams to anyone on the network. Both, plus go2rtc's API, are now reachable only over the Docker network.
-- **The Docker socket mount is gone** — it granted root-equivalent host access to the container that parses browser input. Its two uses are obsolete: go2rtc is updated over its REST API, and ring-mqtt re-reads its token on its own retry cycle.
+- **The Docker socket mount is gone** — it granted root-equivalent host access to the container that parses browser input. Its two uses are obsolete: go2rtc is updated over its REST API, and ring-mqtt is restarted from inside its own container when the wizard writes a token.
 - **Login throttling** — ten failed attempts per five minutes locks a client out with a 429. Previously the bcrypt hash could be guessed at unlimited speed.
 - **Sessions expire** — tokens now carry a 30-day expiry matching the cookie and are pruned as they lapse, instead of living in a set until the process restarted.
 - **Changing the password requires the current one**, and doing so invalidates every existing session. A session alone used to be enough, so a borrowed browser could lock the owner out.
+- **WebSockets now require a session** — Starlette's `BaseHTTPMiddleware` never sees WebSocket handshakes, so with a password set `/ws/events` (event history, device states) and `/ws/video` (live video) were still open to anyone. Both endpoints now check the session themselves and close with 1008 otherwise.
+- **The go2rtc proxy is locked down** — `/proxy/go2rtc/` was outside the protected prefixes and forwarded any GET/POST to go2rtc, exposing its REST API (`/api/config` with the RTSP credentials, `POST /api/streams` to register arbitrary sources) without login. It now requires a session, only serves go2rtc's player scripts (`*.js`) via GET, and no longer forwards the session cookie upstream.
+- **The video WebSocket encodes its `src` parameter** before building the upstream go2rtc URL, so `&`/`#` can no longer inject extra parameters.
 - **Abandoned 2FA sessions are dropped after five minutes** — they hold the Ring email and password in plaintext in memory, and were previously kept until the process exited.
 
 ### Fixed
+- **Cards without a cached snapshot logged a 404** — the card requested `/api/snapshot/<id>` for every camera although `/api/cameras` already reports `has_snapshot`; battery cameras in ring-mqtt's `Auto` mode, for example, have none until their first event. It now checks first, like the camera editor. Contributed by raidel-a in #1.
+- **Camera tiles forced every feed into 16:9** — square "head-to-toe" doorbells were cropped. Tiles, the expanded view and the recording player now take each camera's real shape from its snapshot and live video (16:9 until known), and the grid shows up to four cameras per row on wide screens. Based on an idea and the grid change by wvbigdave in #3.
+- **The NAS instructions only moved the recorder's folder**, so clips were saved to the NAS but the Recordings panel stayed empty. Both services must mount it; `docker-compose.override.yml.example` shows how.
+- **Recordings stalled after the first frame in the browser** — clips were muxed with the MP4 index (`moov`) at the end of the file, behind all the media data. The recorder now writes them with `-movflags +faststart` (lossless). Clips recorded before this update keep the old layout. Contributed by wvbigdave in #2.
+- **WebRTC never connected in the Docker setup** — go2rtc sits on a bridge network and only advertised its container IP and its STUN-discovered public IP with random ports, neither reachable from a browser on the LAN. The player fell back to MSE, which macOS hardware decoding rejects for Ring's H.264 after about a second: the stream "played briefly, then errored". The video proxy now adds ICE candidates for the published port 8555 on the host the browser used to open Ring Off (resolved server-side, `X-Forwarded-Host` respected). `WEBRTC_CANDIDATE_HOST` overrides it, e.g. behind a reverse proxy on another machine.
+- **Closing a stream left the Ring livestream running** — the video proxy waited for both directions to finish, but once WebRTC is up go2rtc sends nothing more over the signaling socket, so the upstream session never closed. Either side ending now ends both.
+- **The MJPEG fallback also kept it running** — the player rendered the MJPEG `<img>` while `video-rtc.js` was still loading, and Chrome keeps such a stream downloading after the image leaves the page, so its backend ffmpeg held the doorbell's livestream open after **Stop**. The player now waits for the script, and an MJPEG image aborts its request when removed. The livestream now ends about eight seconds after Stop.
+- **Fresh installs hung on "Waiting for the first device…" forever** — ring-mqtt started without a token never re-reads its state file (its 60-second retry only covers a token that existed and failed), and since the Docker socket is gone nothing restarted it after the wizard saved the token. `config/ring-mqtt-init.sh` now watches for the token and restarts ring-mqtt via s6 within about three seconds.
+- **The setup wizard's first step could never pass on a fresh install** — the ring-mqtt check probed the RTSP port, which ring-mqtt only opens after authenticating with Ring, so Continue stayed disabled ahead of the very sign-in step that would open it. The check now also accepts ring-mqtt's web UI port (55123).
+- **Two recordings of the same camera at once** — a doorbell press publishes motion and ding together, and the duplicate check only saw a running ffmpeg, not one being started or waiting between retries. A camera is now marked busy for the whole recording job.
+- **A non-UTF-8 MQTT payload crashed the recorder** — the exception escaped `loop_forever()`. Payloads are decoded leniently and a failure to start a recording is logged instead.
+- **Range requests past the end of a clip returned 500** — they now return `416 Range Not Satisfiable`.
+- **Deleting recordings accepted any file** in a camera folder (and the recordings root via `.`). Only `.mp4` clips inside a camera folder can be served or deleted.
+- **`settings.json` and `events.json` are written atomically** — the recorder reads settings from another container on every event, and a read during a plain write fell back to defaults. A corrupt `settings.json` also no longer stops the webapp from starting.
 - **Failed recordings were reported as saved** — the recorder never checked ffmpeg's exit code, so a refused RTSP connection or a stream that dropped instantly still logged `saved <clip>.mp4`, sometimes leaving a zero-byte file behind. Exit codes and the resulting file size are now both checked, the last line of ffmpeg's stderr is reported, and empty files are removed.
 - **A failed recording was never retried** — Ring's livestream usually is not up the moment an event fires, so the one attempt could miss the event entirely. Three attempts are made, four seconds apart. A hung ffmpeg is also killed now: `-t` does not help when the input never opens.
 - **Clip filenames used the container clock** — that is UTC unless told otherwise, so names disagreed with the timestamps shown in the UI. `TZ` is passed to the webapp and recorder (`TZ=Europe/Berlin docker compose up -d`, or set it in the compose file).

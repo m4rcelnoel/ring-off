@@ -135,3 +135,89 @@ def test_restart_is_the_fallback_when_the_api_fails(app, monkeypatch):
         if t is not threading.current_thread():
             t.join(timeout=2)
     assert restarts == [1]
+
+
+# ── WebRTC candidates and video proxy lifecycle ──────────────────────────────
+
+import asyncio as _asyncio
+import json as _json
+
+
+def test_candidates_use_the_host_the_browser_used(app):
+    c = app.webrtc_candidates("192.168.1.20:8080")
+    assert any(" udp " in x and "192.168.1.20 8555 typ host" in x for x in c)
+    assert any(" tcp " in x and "tcptype passive" in x for x in c)
+
+
+def test_candidates_handle_ipv6_hosts(app):
+    assert all("fe80::1 8555" in x for x in app.webrtc_candidates("[fe80::1]:8080"))
+
+
+def test_candidates_resolve_hostnames(app):
+    assert any("127.0.0.1 8555" in x for x in app.webrtc_candidates("localhost:8080"))
+
+
+def test_candidate_host_can_be_overridden(app, monkeypatch):
+    monkeypatch.setattr(app, "WEBRTC_CANDIDATE_HOST", "10.0.0.5")
+    assert all("10.0.0.5" in x for x in app.webrtc_candidates("proxy.example:443"))
+
+
+def test_unresolvable_hosts_produce_no_candidates(app):
+    assert app.webrtc_candidates("does-not-exist.invalid") == []
+
+
+class FakeUpstream:
+    """go2rtc after the WebRTC handshake: answers once, then stays silent."""
+
+    def __init__(self, url):
+        self.sent = []
+        self.closed = False
+        FakeUpstream.last = self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        self.closed = True
+        return False
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        while not self.sent:
+            await _asyncio.sleep(0.01)
+        yield _json.dumps({"type": "webrtc/answer", "value": "v=0"})
+        await _asyncio.Event().wait()          # silent forever, like go2rtc
+
+
+def test_proxy_adds_candidates_after_the_answer(app, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(app.ws_lib, "connect", FakeUpstream)
+    # websocket_connect always uses "testserver" as Host, so the browser's
+    # address arrives the way a reverse proxy would pass it.
+    with TestClient(app.app).websocket_connect(
+            "/ws/video?src=front", headers={"x-forwarded-host": "192.168.1.20:8080"}) as ws:
+        ws.send_text(_json.dumps({"type": "webrtc/offer", "value": "v=0"}))
+        assert ws.receive_json()["type"] == "webrtc/answer"
+        candidate = ws.receive_json()
+        assert candidate["type"] == "webrtc/candidate"
+        assert "192.168.1.20 8555 typ host" in candidate["value"]
+
+
+def test_leaving_closes_the_go2rtc_session(app, monkeypatch):
+    """Otherwise the Ring livestream keeps running with nobody watching."""
+    from fastapi.testclient import TestClient
+    import time
+    monkeypatch.setattr(app.ws_lib, "connect", FakeUpstream)
+    with TestClient(app.app).websocket_connect("/ws/video?src=front") as ws:
+        ws.send_text(_json.dumps({"type": "webrtc/offer", "value": "v=0"}))
+        ws.receive_json()
+    for _ in range(100):
+        if FakeUpstream.last.closed:
+            break
+        time.sleep(0.02)
+    assert FakeUpstream.last.closed

@@ -215,7 +215,7 @@ function DiscoveryStep({ onNext }: { onNext: () => void }) {
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           <p className="text-sm text-muted-foreground">Waiting for the first device…</p>
           <p className="text-xs text-muted-foreground/70 max-w-xs leading-relaxed">
-            This can take up to a minute while ring-mqtt picks up the new token.
+            ring-mqtt restarts with the new token, then announces your devices. This usually takes under a minute.
           </p>
           {waited >= 90 && (
             <p className="text-xs text-amber-400 max-w-xs leading-relaxed">
