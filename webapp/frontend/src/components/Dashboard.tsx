@@ -18,6 +18,14 @@ import type { Camera, RingEvent } from '@/types'
 
 type SidebarTab = 'events' | 'recordings' | 'ha'
 
+// Columns follow the space and the number of cameras, not the window width.
+// Fixed lg:3 / xl:4 columns ignored the 20rem sidebar and left two cameras as
+// 256px tiles next to empty tracks. auto-fit lets the cameras that exist share
+// the row (two get half each), while four still fit side by side on a wide
+// screen. min(100%, …) keeps a single column from overflowing small phones.
+const CAMERA_GRID =
+  'grid items-start gap-4 grid-cols-[repeat(auto-fit,minmax(min(100%,340px),1fr))]'
+
 const SIDEBAR_TABS = [
   { key: 'events',     label: 'Events',     icon: Bell },
   { key: 'recordings', label: 'Recordings', icon: Video },
@@ -108,7 +116,7 @@ export default function Dashboard() {
           </div>
 
           {loadingCams ? (
-            <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div className={CAMERA_GRID}>
               <Skeleton className="aspect-video rounded-xl" />
               <Skeleton className="aspect-video rounded-xl" />
             </div>
@@ -117,7 +125,7 @@ export default function Dashboard() {
               <span className="text-sm">No cameras found — is ring-mqtt running?</span>
             </div>
           ) : (
-            <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div className={CAMERA_GRID}>
               {cameras.map(cam => (
                 <CameraCard
                   key={cam.id}

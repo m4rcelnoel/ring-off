@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Recordings could be deleted unseen on touch screens** — the play and delete buttons only appeared on hover, but stayed tappable while invisible. They are now always shown on touch devices and narrow screens, tapping a recording plays it, and deleting asks for confirmation.
 - **Browsers kept showing the old UI after an update** — `index.html` was served without `Cache-Control`, so browsers cached it heuristically and loaded the previous bundle (or a blank page once it was gone). It is now revalidated on every load; hashed assets are cached permanently. After updating to this version, reload the page once.
 
+- **Camera tiles became small in 1.4.0** — the grid switched to fixed three and four columns by window width, ignoring the sidebar, so two cameras showed as 256 px tiles next to empty space. Columns now follow the available space and the number of cameras: two cameras share the row (about 530 px each at 1440 px, 770 px at 1920 px), four still fit side by side on a wide screen, and each camera keeps its own aspect ratio.
+
 ### Changed
 - **Ring Video Doorbell (2nd Gen)** added to the compatible hardware list, reported working by a user.
 

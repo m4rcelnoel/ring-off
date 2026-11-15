@@ -150,7 +150,8 @@ export default function CameraCard({ camera, onExpand, deviceState }: Props) {
     : null
 
   return (
-    <div className="group relative rounded-xl border border-border bg-card overflow-hidden hover:border-primary/50 transition-colors">
+    // max-w: with auto-fit a lone camera would otherwise fill the whole row.
+    <div className="group relative w-full max-w-4xl rounded-xl border border-border bg-card overflow-hidden hover:border-primary/50 transition-colors">
       {/* Video area */}
       <div className="relative bg-black" style={{ aspectRatio: aspect }}>
         {active ? (
