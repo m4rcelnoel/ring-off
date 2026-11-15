@@ -1819,7 +1819,28 @@ async def events_ws(websocket: WebSocket):
 # directly for development, where vite serves the frontend on :5173 and proxies
 # the API here — mounting unconditionally would crash startup.
 STATIC_DIR = Path(os.getenv("STATIC_DIR", "static"))
+
+
+class FrontendFiles(StaticFiles):
+    """Static files with cache headers that survive an update.
+
+    Without Cache-Control, browsers cached index.html heuristically, so after
+    an update they kept loading the previous UI — or a blank page once the old
+    hashed bundle it referenced was gone. index.html is now revalidated on
+    every load (cheap, thanks to the ETag); the hashed bundles under assets/
+    never change and may be cached for good.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.startswith("assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 if STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    app.mount("/", FrontendFiles(directory=str(STATIC_DIR), html=True), name="static")
 else:
     print(f"No static directory at '{STATIC_DIR}' — serving API only")

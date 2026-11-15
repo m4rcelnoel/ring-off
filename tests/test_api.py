@@ -348,3 +348,22 @@ def test_entities_are_matched_on_id_and_friendly_name(app, monkeypatch):
     monkeypatch.setattr(app.httpx, "AsyncClient", lambda **kw: Client())
     found = {e["entity_id"] for e in asyncio.run(app.get_ha_entities())}
     assert found == {"binary_sensor.haustuer", "sensor.haustür_battery"}
+
+
+# ── Frontend cache headers ────────────────────────────────────────────────────
+
+def test_index_is_revalidated_and_assets_are_immutable(tmp_path):
+    """A cached index.html kept serving the old UI after an update."""
+    import main
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<html></html>")
+    (tmp_path / "assets" / "index-abc123.js").write_text("console.log(1)")
+    site = FastAPI()
+    site.mount("/", main.FrontendFiles(directory=str(tmp_path), html=True))
+    client = TestClient(site)
+
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert "immutable" in client.get("/assets/index-abc123.js").headers["cache-control"]

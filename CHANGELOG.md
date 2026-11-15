@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-15
+
+### Upgrading
+
+**Reload the dashboard once after updating.** Earlier versions served `index.html` without cache headers, so a browser may still show the 1.4.0 interface until it is reloaded. From this version on, updates show up without that step.
+
+Nothing else changes: no configuration, ports or data are affected.
+
+### Fixed
+- **Events, recordings and the HA panel were unreachable on phones** — the sidebar is hidden below 1024 px and nothing replaced it. Phones and narrow windows now get a bottom navigation bar that opens each panel full-screen. The layout also uses the dynamic viewport height, so mobile browser toolbars no longer cut off the bottom of the page, and toasts sit above the navigation bar.
+- **Recordings could be deleted unseen on touch screens** — the play and delete buttons only appeared on hover, but stayed tappable while invisible. They are now always shown on touch devices and narrow screens, tapping a recording plays it, and deleting asks for confirmation.
+- **Browsers kept showing the old UI after an update** — `index.html` was served without `Cache-Control`, so browsers cached it heuristically and loaded the previous bundle (or a blank page once it was gone). It is now revalidated on every load; hashed assets are cached permanently. After updating to this version, reload the page once.
+- **Camera tiles became small in 1.4.0** — the grid switched to fixed three and four columns by window width, ignoring the sidebar, so two cameras showed as 256 px tiles next to empty space. Columns now follow the available space and the number of cameras: two cameras share the row (about 530 px each at 1440 px, 770 px at 1920 px), four still fit side by side on a wide screen, and each camera keeps its own aspect ratio.
+
+### Changed
+- **Documentation brought up to date with 1.4** — the architecture diagram now shows the real data flows (WebRTC media straight from the browser to go2rtc on 8555, the MJPEG fallback pulling RTSP from ring-mqtt, only 8080 and 8555 published). Removed steps that no longer work: opening go2rtc on `:1984`, `curl` in the webapp image, a `ring_token` field in `config.json`, and a broker patch that could empty `config.json`. Local changes, optional services and the ring-mqtt fallback UI are documented via `docker-compose.override.yml`, and the image tags are current.
+- **Ring Video Doorbell (2nd Gen)** added to the compatible hardware list, reported working by a user.
+
+### Known issues
+- **Slow-waking battery cameras may not stream** — unchanged from 1.4.0; see the troubleshooting section of the README.
+
 ## [1.4.0] - 2026-11-15
 
 ### Upgrading

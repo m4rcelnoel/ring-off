@@ -78,6 +78,7 @@ export default function RecordingsPanel({ cameras }: Props) {
   useEffect(() => { loadClips() }, [])
 
   async function deleteClip(clip: Clip) {
+    if (!window.confirm(`Delete ${clip.filename}? This cannot be undone.`)) return
     const key = clip.path
     setDeleting(key)
     try {
@@ -128,14 +129,17 @@ export default function RecordingsPanel({ cameras }: Props) {
                 }
               </div>
 
-              <div className="flex-1 min-w-0">
+              <button className="flex-1 min-w-0 text-left" onClick={() => setPlaying(clip)}>
                 <p className="text-sm font-medium truncate">{cameraName(clip.device_id)}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {formatDate(clip.created)} · {formatBytes(clip.size)}
                 </p>
-              </div>
+              </button>
 
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {/* Hover-only on desktop. On touch screens there is no hover: the
+                  buttons were invisible but still tappable, so a tap on the
+                  right of a row could delete a clip unseen. */}
+              <div className="flex items-center gap-1 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:focus-within:opacity-100 [@media(hover:none)]:opacity-100">
                 <Button
                   size="icon"
                   variant="ghost"
