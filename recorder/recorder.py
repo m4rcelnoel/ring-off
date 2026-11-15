@@ -83,6 +83,7 @@ def rtsp_url(device_id: str) -> str:
 
 
 RECORD_ATTEMPTS = 3
+WAKE_TIMEOUT    = int(os.getenv("STREAM_WAKE_TIMEOUT", "60"))   # seconds
 RETRY_DELAY     = 4                       # Ring needs a moment to bring the stream up
 MIN_CLIP_BYTES  = 32 * 1024               # smaller than this is not real video
 MIN_FREE_BYTES  = 512 * 1024 * 1024       # refuse to fill the disk completely
@@ -102,7 +103,10 @@ def run_ffmpeg(device_id: str, out: Path, duration: int) -> tuple[bool, str]:
     cmd = [
         "ffmpeg", "-loglevel", "warning",
         "-rtsp_transport", "tcp",
-        "-timeout", "15000000",           # give up on a dead RTSP socket
+        # Socket timeout. It also bounds the wait for ring-mqtt's DESCRIBE
+        # answer, which comes only once the camera sends video — over 20 s for
+        # a waking battery doorbell, so 15 s made every attempt fail.
+        "-timeout", str(WAKE_TIMEOUT * 1_000_000),
         "-i", rtsp_url(device_id),
         "-t", str(duration),
         "-c", "copy",
@@ -120,7 +124,7 @@ def run_ffmpeg(device_id: str, out: Path, duration: int) -> tuple[bool, str]:
         _active[device_id] = proc
     try:
         # Wall-clock bound: -t alone does not save us if the input never opens.
-        _, stderr = proc.communicate(timeout=duration + 30)
+        _, stderr = proc.communicate(timeout=duration + WAKE_TIMEOUT + 15)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()

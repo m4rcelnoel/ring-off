@@ -26,7 +26,17 @@ Dazu 21 Regressionstests (`tests/test_security.py`, Ergänzungen in `test_record
 
 - **1.4.0 ist veröffentlicht** (Tag `v1.4.0`, Release mit ZIP). PR #1–#3 sind kommentiert, #2 und #3 geschlossen.
 - **Auf `staging`, noch nicht veröffentlicht (→ 1.4.1):** Handy-Navigation, Löschschutz auf Touch-Geräten, Cache-Header für `index.html`, größere Kamerakacheln, Doorbell Gen 2 in der README, überarbeitete Dokumentation inkl. Architektur-Schaubild.
-- **Offen:** langsam aufwachende Akku-Kameras (siehe Nachtrag), Phasen 2–4.
+- **1.4.1 ist veröffentlicht.**
+- **Auf `staging`:** Langsam aufwachende Akku-Kameras werden jetzt von der Webapp geweckt, bevor go2rtc gefragt wird (`RtspHold`). Mit „Mama“ funktioniert der Stream jetzt (3,7 s Aufwachzeit). Den langsamen Fall habe ich in einer isolierten Docker-Umgebung nachgestellt: eine Ersatz-Kamera, die wie ring-mqtt per `exec` erst nach 25 s Bild liefert, mit echtem go2rtc und der neuen Webapp. Ergebnisse:
+  - alter Weg: Fehler nach 10 s, wie bei „Mama“ vorher
+  - neuer Weg: Bild nach 28,6 s
+  - Verlassen beim Aufwachen: bricht sauber ab, go2rtc wird nicht gefragt
+  - zwei Zuschauer: beide bekommen Bild, die Kamera läuft, bis der letzte geht
+  - Limit überschritten: klare Fehlermeldung statt Hängen
+  - Recorder: Clip statt Abbruch nach 15 s
+  - Browser per WebRTC: Bild nach etwa 30 s
+- **Umgesetzt:** Der Player zeigt beim Aufwachen einen Hinweis („Waking up the camera…“ nach 3 s, „The camera did not respond“ mit „Try again“ nach 75 s). Getestet mit der 25-s-Test-Kamera (WebRTC, MJPEG, Fehlerfall, erneuter Versuch) und mit „Oma“ in Handy-Breite.
+- **Offen:** Phasen 2–4.
 
 ## Phase 1: Absichern und releasen (kurzfristig, erledigt mit 1.4.0)
 

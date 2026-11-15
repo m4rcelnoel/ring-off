@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, Maximize2, Play, VideoOff, BatteryLow, Wifi } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useVideoRtc } from '@/hooks/useVideoRtc'
@@ -23,6 +23,15 @@ interface Props {
   deviceState?: DeviceState
 }
 
+// Until the first frame: a spinner, then a hint once it is clearly taking a
+// while, then a way out. Battery doorbells can need 25 s or more to wake, and
+// the backend waits up to STREAM_WAKE_TIMEOUT (60 s) for them — a silent black
+// box for that long looked broken.
+const WAKING_HINT_AFTER_MS = 3_000
+const GIVE_UP_AFTER_MS = 75_000
+
+type StreamPhase = 'connecting' | 'waking' | 'failed'
+
 export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
   streamName: string
   mode?: 'webrtc' | 'mjpeg'
@@ -30,10 +39,23 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
   const rtcState = useVideoRtc()
   const rtcReady = rtcState === 'ready'
   const [mode, setMode] = useState<'webrtc' | 'mjpeg'>(initialMode)
+  const [attempt, setAttempt] = useState(0)
+  const [hasPicture, setHasPicture] = useState(false)
+  const [phase, setPhase] = useState<StreamPhase>('connecting')
   const playerRef = useRef<HTMLElement | null>(null)
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const wsUrl = `${proto}//${location.host}/ws/video?src=${streamName}`
+
+  // Every new connection starts without a picture and runs its own timers.
+  useEffect(() => {
+    setHasPicture(false)
+    setPhase('connecting')
+    const hint = setTimeout(() => setPhase(p => (p === 'connecting' ? 'waking' : p)),
+      WAKING_HINT_AFTER_MS)
+    const giveUp = setTimeout(() => setPhase('failed'), GIVE_UP_AFTER_MS)
+    return () => { clearTimeout(hint); clearTimeout(giveUp) }
+  }, [streamName, mode, attempt])
 
   // `src` must be assigned as a *property*, not a JSX attribute. VideoRTC starts
   // the connection from its `set src()` accessor and defines no
@@ -43,22 +65,35 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
   useEffect(() => {
     const el = playerRef.current as (HTMLElement & { src?: string }) | null
     if (el) el.src = wsUrl
-  }, [wsUrl, rtcReady, mode])
+  }, [wsUrl, rtcReady, mode, attempt])
 
-  // The live picture is the authority on the camera's shape; 'resize' also
-  // fires when a camera switches resolution mid-stream.
+  // The live picture is the authority on the camera's shape ('resize' also
+  // fires when a camera switches resolution mid-stream) and ends the waiting
+  // state. video-rtc keeps one <video> whether it plays WebRTC or MSE.
   useEffect(() => {
     const video = playerRef.current?.querySelector('video')
     if (!video) return
     const update = () => reportAspect(streamName, video.videoWidth, video.videoHeight)
+    const picture = () => { if (video.videoWidth > 0) setHasPicture(true) }
     update()
+    picture()
     video.addEventListener('resize', update)
     video.addEventListener('loadedmetadata', update)
+    video.addEventListener('playing', picture)
+    video.addEventListener('loadeddata', picture)
     return () => {
       video.removeEventListener('resize', update)
       video.removeEventListener('loadedmetadata', update)
+      video.removeEventListener('playing', picture)
+      video.removeEventListener('loadeddata', picture)
     }
-  }, [streamName, rtcReady, mode])
+  }, [streamName, rtcReady, mode, attempt])
+
+  const markPicture = useCallback(() => setHasPicture(true), [])
+
+  const status = !hasPicture && (
+    <StreamStatus phase={phase} onRetry={() => setAttempt(n => n + 1)} />
+  )
 
   if (mode === 'webrtc' && rtcReady) {
     return (
@@ -66,9 +101,11 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
         {/* eslint-disable-next-line @typescript-eslint/ban-ts-comment */}
         {/* @ts-ignore */}
         <video-rtc
+          key={attempt}
           ref={playerRef}
           style={{ width: '100%', height: '100%', display: 'block' }}
         />
+        {status}
         <button
           className="absolute bottom-2 right-2 text-[10px] text-white/50 hover:text-white/80 bg-black/50 rounded px-1.5 py-0.5 transition-colors"
           title="Switch to MJPEG fallback"
@@ -88,7 +125,41 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
     )
   }
 
-  return <MjpegStream streamName={streamName} />
+  return (
+    <div className="relative w-full h-full">
+      <MjpegStream key={attempt} streamName={streamName} onPicture={markPicture} />
+      {status}
+    </div>
+  )
+}
+
+function StreamStatus({ phase, onRetry }: { phase: StreamPhase; onRetry: () => void }) {
+  return (
+    <div
+      role="status"
+      className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40 px-4 text-center"
+    >
+      {phase === 'failed' ? (
+        <>
+          <VideoOff className="h-6 w-6 text-white/50" />
+          <p className="text-sm font-medium text-white/80">The camera did not respond.</p>
+          <Button size="sm" variant="secondary" className="pointer-events-auto h-7 text-xs" onClick={onRetry}>
+            Try again
+          </Button>
+        </>
+      ) : (
+        <>
+          <Loader2 className="h-6 w-6 animate-spin text-white/60" />
+          {phase === 'waking' && (
+            <>
+              <p className="text-sm font-medium text-white/80">Waking up the camera…</p>
+              <p className="text-xs text-white/50">Battery cameras can take up to 30 seconds.</p>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 // A 1×1 transparent GIF, used to abort the MJPEG request on unmount.
@@ -100,7 +171,7 @@ const BLANK_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABA
  * livestream open — so "Stop" left the doorbell streaming (and draining its
  * battery). Pointing src elsewhere before unmount aborts the request.
  */
-function MjpegStream({ streamName }: { streamName: string }) {
+function MjpegStream({ streamName, onPicture }: { streamName: string; onPicture: () => void }) {
   const imgRef = useRef<HTMLImageElement | null>(null)
 
   useEffect(() => {
@@ -108,10 +179,23 @@ function MjpegStream({ streamName }: { streamName: string }) {
     return () => { if (img) img.src = BLANK_IMAGE }
   }, [streamName])
 
+  // 'load' is not reliably fired for the first part of a multipart stream, so
+  // also watch for the first decoded frame giving the image a size.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if ((imgRef.current?.naturalWidth ?? 0) > 0) {
+        clearInterval(timer)
+        onPicture()
+      }
+    }, 500)
+    return () => clearInterval(timer)
+  }, [streamName, onPicture])
+
   return (
     <img
       ref={imgRef}
       src={`/stream/${streamName}`}
+      onLoad={onPicture}
       className="w-full h-full object-cover"
       alt={streamName}
     />

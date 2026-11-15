@@ -15,6 +15,7 @@ FastAPI server providing:
 """
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -29,7 +30,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 import bcrypt
 import yaml
@@ -1623,7 +1624,9 @@ async def stream_mjpeg(stream_name: str):
             "ffmpeg",
             "-loglevel", "error",
             "-rtsp_transport", "tcp",
-            "-timeout", "30000000",
+            # Socket timeout, which also bounds the wait for DESCRIBE: a
+            # waking battery camera needs well over 20 s.
+            "-timeout", str(int(STREAM_WAKE_TIMEOUT * 1_000_000)),
             "-i", src,
             "-an",
             "-f", "mpjpeg",
@@ -1729,6 +1732,107 @@ def webrtc_candidates(host_header: str) -> list[str]:
     return candidates
 
 
+# How long a viewer may wait for a camera to wake up. Battery doorbells were
+# measured at up to ~26 s from request to first frame.
+STREAM_WAKE_TIMEOUT = float(os.getenv("STREAM_WAKE_TIMEOUT", "60"))
+
+
+class RtspHold:
+    """A DESCRIBE-only RTSP session on ring-mqtt that wakes a camera and keeps
+    its stream running while someone watches.
+
+    go2rtc answers its own RTSP requests within a fixed 5 s (`Timeout` in
+    go2rtc's pkg/rtsp/conn.go; `#timeout=` only covers dialing and data), but
+    ring-mqtt answers DESCRIBE only once the camera delivers video. A battery
+    doorbell that takes 20 s or more to wake was therefore never streamable:
+    go2rtc gave up, ring-mqtt stopped the half-started stream for lack of
+    viewers, and every retry started from scratch.
+
+    ring-mqtt's RTSP server counts a client as a viewer from DESCRIBE until the
+    connection closes. So this waits for the DESCRIBE answer without go2rtc's
+    limit, then keeps the connection open — answering the server's 5 s idle
+    deadline with OPTIONS — until the viewer leaves. If this process dies, the
+    socket closes and the stream ends with it; nothing can be left running the
+    way ring-mqtt's own 24 h "stream ON" keepalive could.
+    """
+
+    KEEPALIVE_INTERVAL = 2.0
+
+    def __init__(self, device_id: str):
+        self.device_id = device_id
+        self._writer: asyncio.StreamWriter | None = None
+        self._tasks: list[asyncio.Task] = []
+
+    def _request(self, method: str, url: str, cseq: int, auth: str) -> bytes:
+        extra = "Accept: application/sdp\r\n" if method == "DESCRIBE" else ""
+        return (f"{method} {url} RTSP/1.0\r\nCSeq: {cseq}\r\n"
+                f"User-Agent: {USER_AGENT}\r\n{extra}{auth}\r\n").encode()
+
+    async def open(self) -> bool:
+        """True once the camera's stream is up; False if it could not be woken."""
+        parts = urlsplit(rtsp_url(self.device_id))
+        host, port = parts.hostname or RTSP_HOST, parts.port or 554
+        url = f"rtsp://{host}:{port}{parts.path}"
+        auth = ""
+        if parts.username or parts.password:
+            pair = f"{unquote(parts.username or '')}:{unquote(parts.password or '')}"
+            auth = f"Authorization: Basic {base64.b64encode(pair.encode()).decode()}\r\n"
+
+        started = time.monotonic()
+        try:
+            reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), 5)
+            self._writer.write(self._request("DESCRIBE", url, 1, auth))
+            await self._writer.drain()
+            status = await asyncio.wait_for(reader.readline(), STREAM_WAKE_TIMEOUT)
+        except Exception as e:
+            print(f"Stream wake-up for {self.device_id} failed: {e!r}")
+            self.close()
+            return False
+
+        if not status.startswith(b"RTSP/1.0 200"):
+            print(f"Stream wake-up for {self.device_id}: "
+                  f"{status.decode(errors='replace').strip() or 'no answer'}")
+            self.close()
+            return False
+
+        print(f"Camera {self.device_id} awake after {time.monotonic() - started:.1f}s")
+        self._tasks = [asyncio.create_task(self._drain(reader)),
+                       asyncio.create_task(self._keepalive(url, auth))]
+        return True
+
+    async def _drain(self, reader: asyncio.StreamReader) -> None:
+        # The SDP body and OPTIONS replies are of no interest; reading them
+        # just keeps the server from blocking on a full socket.
+        try:
+            while await reader.read(65536):
+                pass
+        except Exception:
+            pass
+
+    async def _keepalive(self, url: str, auth: str) -> None:
+        cseq = 2
+        try:
+            while self._writer is not None:
+                await asyncio.sleep(self.KEEPALIVE_INTERVAL)
+                self._writer.write(self._request("OPTIONS", url, cseq, auth))
+                await self._writer.drain()
+                cseq += 1
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        self._tasks = []
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+            self._writer = None
+
+
 @app.websocket("/ws/video")
 async def video_proxy(websocket: WebSocket, src: str):
     if not request_is_authorized(websocket.cookies):
@@ -1739,23 +1843,51 @@ async def video_proxy(websocket: WebSocket, src: str):
                    or websocket.headers.get("host", ""))
     # Encoded: a raw "&" or "#" in src would inject extra upstream parameters.
     upstream_url = f"{GO2RTC_WS}/api/ws?src={quote(src, safe='')}"
+
+    # The browser's messages are queued, not forwarded directly: its offer
+    # arrives at once, but go2rtc may only be asked once the camera is awake.
+    # Reading continuously also notices a viewer who leaves while waiting.
+    inbox: asyncio.Queue = asyncio.Queue()
+
+    async def read_client():
+        try:
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                await inbox.put(message)
+        except Exception:
+            pass
+        finally:
+            inbox.put_nowait(None)
+
+    reader_task = asyncio.create_task(read_client())
+    device_id = go2rtc_streams().get(src)
+    hold = RtspHold(device_id) if device_id else None
     try:
+        if hold is not None:
+            waking = asyncio.create_task(hold.open())
+            await asyncio.wait({waking, reader_task}, return_when=asyncio.FIRST_COMPLETED)
+            if not waking.done():
+                # The viewer left before the camera woke: stop waking it.
+                waking.cancel()
+                await asyncio.gather(waking, return_exceptions=True)
+                return
+            # Not awake within the limit: still try go2rtc, which reports the
+            # error to the player instead of leaving it waiting silently.
+
         async with ws_lib.connect(upstream_url) as upstream:
             async def to_upstream():
-                # go2rtc's signaling is JSON *text* frames. iter_bytes() raises
-                # on a text message, and the resulting silent failure meant the
-                # browser's WebRTC offer never reached go2rtc — the stream just
-                # stayed black. Forward whatever frame type actually arrives.
+                # go2rtc's signaling is JSON *text* frames. Forward whatever
+                # frame type actually arrives — iter_bytes() used to raise on
+                # text and silently drop the browser's WebRTC offer.
                 try:
-                    while True:
-                        message = await websocket.receive()
-                        if message["type"] == "websocket.disconnect":
-                            break
+                    while (message := await inbox.get()) is not None:
                         if message.get("text") is not None:
                             await upstream.send(message["text"])
                         elif message.get("bytes") is not None:
                             await upstream.send(message["bytes"])
-                except (WebSocketDisconnect, Exception):
+                except Exception:
                     pass
 
             async def to_client():
@@ -1789,6 +1921,9 @@ async def video_proxy(websocket: WebSocket, src: str):
     except Exception as e:
         print(f"Video proxy error ({src}): {e}")
     finally:
+        reader_task.cancel()
+        if hold is not None:
+            hold.close()
         try:
             await websocket.close()
         except Exception:

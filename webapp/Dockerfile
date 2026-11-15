@@ -10,6 +10,9 @@ RUN node -p "require('./package.json').version" > /version.txt
 
 # ── Stage 2: Python backend ───────────────────────────────────────────────────
 FROM python:3.11-slim
+# Unbuffered, so print() diagnostics reach `docker compose logs` as they happen
+# instead of sitting in a buffer until it fills or the process exits.
+ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
