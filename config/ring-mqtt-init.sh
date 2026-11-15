@@ -58,4 +58,34 @@ console.log('ring-mqtt-init: patched config.json with missing MQTT defaults');
 "
 fi
 
+# ── Pick up a token written by the Ring Off setup wizard ─────────────────────
+# When ring-mqtt starts without a token it serves its web UI and then waits
+# only for a token submitted through that UI. It never re-reads ring-state.json
+# (lib/main.js → handleNoToken), and its 60-second retry applies only to a token
+# that already existed and failed. The wizard writes the token straight into
+# the state file, so without a restart a fresh install waited forever on
+# "Waiting for the first device…".
+#
+# This watcher bridges that gap without the Docker socket: once a token appears
+# it stops the node process, and s6 (which supervises ring-mqtt) restarts it
+# with the token loaded. It handles only the no-token → token transition and
+# then exits — ring-mqtt rewrites the token itself on every refresh, so
+# watching for changes beyond that would restart it in a loop.
+STATE=/data/ring-state.json
+
+has_token() {
+  [ -f "$STATE" ] && node -e "
+    const s = JSON.parse(require('fs').readFileSync('$STATE', 'utf8'));
+    process.exit(s.ring_token ? 0 : 1);
+  " 2>/dev/null
+}
+
+if ! has_token; then
+  (
+    until has_token; do sleep 3; done
+    echo "ring-mqtt-init: Ring token found — restarting ring-mqtt to load it"
+    pkill -f 'node .*ring-mqtt.js'
+  ) &
+fi
+
 exec /init

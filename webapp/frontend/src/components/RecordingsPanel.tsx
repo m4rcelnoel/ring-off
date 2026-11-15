@@ -48,7 +48,8 @@ function VideoModal({ clip, cameraName, onClose }: VideoModalProps) {
           src={`/recordings/files/${clip.path}`}
           controls
           autoPlay
-          className="w-full aspect-video bg-black"
+          // Any clip shape letterboxes instead of being forced into 16:9 (PR #3).
+          className="w-full h-auto max-h-[80vh] object-contain bg-black"
         />
       </div>
     </div>

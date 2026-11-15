@@ -1,0 +1,35 @@
+# Local changes to docker-compose.yml belong here, not in docker-compose.yml.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Docker Compose loads docker-compose.override.yml automatically on top of
+# docker-compose.yml. It is gitignored, so `git pull` never conflicts with it —
+# editing docker-compose.yml itself makes every update stop with
+# "Your local changes … would be overwritten by merge".
+#
+# Delete whatever you do not need; an empty `services:` is not valid, so keep at
+# least one entry or remove the file.
+
+services:
+
+  # ── Recordings on a NAS ─────────────────────────────────────────────────────
+  # Both services need the same folder: the recorder writes the clips, the
+  # webapp lists, plays and deletes them. Changing only the recorder leaves the
+  # Recordings panel empty. A volume here replaces the one with the same
+  # container path (/videos) from docker-compose.yml.
+  recorder:
+    volumes:
+      - /mnt/nas/ring-videos:/videos
+  webapp:
+    volumes:
+      - /mnt/nas/ring-videos:/videos
+
+  # ── Expose the broker to Home Assistant (set a Mosquitto password first) ────
+  # mosquitto:
+  #   ports:
+  #     - "1883:1883"
+
+  # ── WebRTC behind a reverse proxy on another machine ────────────────────────
+  # webapp:
+  #   environment:
+  #     - WEBRTC_CANDIDATE_HOST=192.168.1.20

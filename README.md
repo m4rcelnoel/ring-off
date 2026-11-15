@@ -133,6 +133,31 @@ Afterwards, **Settings → Cameras** lets you rename a camera or hide it from th
 
 ---
 
+## Updating
+
+```bash
+cd ring-off
+git pull
+docker compose pull
+docker compose up -d
+```
+
+`git pull` updates the compose file and `config/ring-mqtt-init.sh`; `docker compose pull` fetches the new images. Your data in `data/`, `config/go2rtc.yaml` and the settings made in the web UI are kept — no migration step is needed. Read the **Upgrading** notes in [CHANGELOG.md](CHANGELOG.md) before a minor-version update.
+
+**Keep local changes out of `docker-compose.yml`.** If you edited it (a NAS path, an extra port, an environment variable), `git pull` stops with *"Your local changes … would be overwritten by merge"*. Move those changes into `docker-compose.override.yml` — Compose loads it automatically and git ignores it:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml   # then edit
+git checkout -- docker-compose.yml                                   # drop your edits to the original
+git pull
+```
+
+If you would rather keep your edited file, `git stash && git pull && git stash pop` re-applies your changes on top of the update.
+
+**Installed from a release ZIP instead of git?** Extract the new ZIP into a separate folder and copy over only `docker-compose.yml` and the files in `config/` that it contains — never `data/` or your own `config/go2rtc.yaml`. Keep your own changes in `docker-compose.override.yml` there as well, so the copied `docker-compose.yml` does not undo them.
+
+---
+
 ## Stream Setup
 
 Ring camera streams are served by **go2rtc**, which re-streams ring-mqtt's internal RTSP feeds.
@@ -193,6 +218,9 @@ These are worth knowing if you deviate from the default compose setup:
 | `RING_MQTT_CONFIG` | `/ring-mqtt-data/config.json` | ring-mqtt's config, read for the livestream credentials |
 | `RING_MQTT_STATE` | alongside the config | ring-mqtt's state file, where the Ring refresh token is written |
 | `STATIC_DIR` | `static` | Built frontend. Skipped when absent, so the backend can run without it in development |
+| `TZ` | `UTC` | Timezone for clip filenames and logs. Set it to match the UI, e.g. `TZ=Europe/Berlin` |
+| `EVENTS_FILE` | alongside settings | Persisted event feed |
+| `SNAPSHOT_DIR` | alongside settings | Persisted camera thumbnails |
 
 ### Settings (web UI → Settings gear)
 
@@ -226,28 +254,48 @@ https://gotify.yourhost.com/message?token=YOUR_APP_TOKEN
 
 ### Service ports
 
-| Service | Port | Purpose |
-|---|---|---|
-| webapp | **8080** | Web UI + API (expose this one) |
-| go2rtc | 8555 tcp+udp | WebRTC media — the browser connects here directly for live video |
-| go2rtc | 1984 | go2rtc web UI + API (internal) |
-| mosquitto | 1883 | MQTT broker (internal) |
-| ring-mqtt | 8554 | RTSP streams (internal) |
-| ring-mqtt | 55123 | Ring token setup UI (only needed as a fallback — the web UI can do this) |
+Only two ports are published. Everything else talks over the Docker network.
 
-> **8555 needs both protocols.** WebRTC prefers UDP and falls back to TCP; mapping only one leaves browsers unable to connect on networks that block the other. `docker-compose.yml` publishes both.
+| Service | Port | Published | Purpose |
+|---|---|---|---|
+| webapp | **8080** | yes | Web UI + API |
+| go2rtc | **8555** tcp+udp | yes | WebRTC media — the browser connects here directly for live video |
+| go2rtc | 1984 | no | go2rtc UI and API; the webapp proxies what it needs |
+| mosquitto | 1883 | no | MQTT broker |
+| ring-mqtt | 8554 | no | RTSP streams |
+| ring-mqtt | 55123 | no | ring-mqtt's own token setup UI — the setup wizard replaces it |
+
+> **8555 needs both protocols.** WebRTC prefers UDP and falls back to TCP; mapping only one leaves browsers unable to connect on networks that block the other.
+>
+> Ring Off tells the browser to reach 8555 on the same host name you opened the dashboard with. If you access it through a reverse proxy on a *different* machine, set `WEBRTC_CANDIDATE_HOST` on the webapp to the IP of the Docker host.
+
+> **Why the others are closed.** The broker allows anonymous connections and ring-mqtt's setup UI has no authentication at all, so publishing them hands anyone on your network your Ring topics and camera streams. Each is a one-line `ports:` entry in `docker-compose.yml` if you need it — put a password on Mosquitto first if you expose 1883 for Home Assistant.
+
+### Docker socket
+
+The webapp does **not** mount `/var/run/docker.sock`. That is root-equivalent access to the host, and this is the container that parses browser input.
+
+It was previously used to restart go2rtc when a camera appeared and ring-mqtt after a Ring sign-in. go2rtc is now updated over its REST API instead, and ring-mqtt is restarted from inside its own container: `config/ring-mqtt-init.sh` watches for the token the wizard writes and restarts ring-mqtt within a few seconds. Note that ring-mqtt, once started without a token, never re-reads its state file on its own.
 
 ---
 
 ## NAS Recording
 
-To store recordings on a NAS, change the recorder volume in `docker-compose.yml`:
+To store recordings on a NAS, point **both** the recorder and the webapp at your NAS mount — the recorder writes the clips, the webapp lists, plays and deletes them. If only the recorder moves, clips are saved but the Recordings panel stays empty.
+
+Put this in `docker-compose.override.yml` (copy `docker-compose.override.yml.example`), not in `docker-compose.yml`, so that updates keep working — see [Updating](#updating):
 
 ```yaml
-recorder:
-  volumes:
-    - /mnt/nas/ring-videos:/videos   # ← your NAS mount point
+services:
+  recorder:
+    volumes:
+      - /mnt/nas/ring-videos:/videos   # ← your NAS mount point
+  webapp:
+    volumes:
+      - /mnt/nas/ring-videos:/videos   # ← the same folder
 ```
+
+Compose replaces the default `./data/videos:/videos` mount with this one, because both target `/videos`. Existing clips are not moved; copy `data/videos/*` to the NAS folder if you want to keep them.
 
 Recordings are organised by device ID:
 
@@ -544,6 +592,24 @@ docker compose restart mosquitto
 ---
 
 ## Development
+
+### Branches
+
+Work lands on `staging` first; `main` only ever receives merges from it.
+
+| Branch | CI | Image tag |
+|---|---|---|
+| `staging` | tests + typecheck, then build | `ghcr.io/…:staging` |
+| `main` | tests + typecheck, then build | `ghcr.io/…:main` and `:latest` |
+| tag `v*` | — | `:1.4.0`, `:1.4` + GitHub release |
+
+`main` is protected: no direct pushes, and the `Tests` job has to be green before a pull request can be merged. To try a change before it reaches `main`, point the images at `:staging` in `docker-compose.override.yml`:
+
+```yaml
+services:
+  webapp:   { image: ghcr.io/m4rcelnoel/ring-off-webapp:staging }
+  recorder: { image: ghcr.io/m4rcelnoel/ring-off-recorder:staging }
+```
 
 ### Build from source (all services)
 

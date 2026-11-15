@@ -22,6 +22,8 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
   const [haUrl, setHaUrl] = useState('')
   const [haToken, setHaToken] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [pwError, setPwError] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
@@ -53,6 +55,7 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
         notify_on_low_battery:     settings.notify_on_low_battery,
         low_battery_threshold:     settings.low_battery_threshold,
         notify_on_connection_lost: settings.notify_on_connection_lost,
+        ha_entity_filter:          settings.ha_entity_filter,
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -69,13 +72,18 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
   }
 
   async function savePassword() {
-    setPwSaving(true)
+    setPwSaving(true); setPwError('')
     try {
-      await api.post('/api/app/set-password', { password: newPassword })
-      setNewPassword('')
+      await api.post('/api/app/set-password', {
+        password: newPassword,
+        current_password: currentPassword,
+      })
+      setNewPassword(''); setCurrentPassword('')
       setPwSaved(true)
       setTimeout(() => setPwSaved(false), 2000)
       if (settings) setSettings({ ...settings, app_password_set: Boolean(newPassword) })
+    } catch (e) {
+      setPwError(e instanceof Error ? e.message : 'Could not change the password')
     } finally {
       setPwSaving(false)
     }
@@ -279,6 +287,18 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
                 Create one in HA → Profile → Long-Lived Access Tokens
               </p>
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ha-filter">Entity Filter</Label>
+              <Input id="ha-filter" placeholder="ring, doorbell"
+                value={settings?.ha_entity_filter ?? ''}
+                onChange={e => setSettings(s => s ? { ...s, ha_entity_filter: e.target.value } : s)} />
+              <p className="text-xs text-muted-foreground">
+                Comma-separated terms matched against entity ids and friendly names.
+                Leave blank for <code className="text-foreground">ring, doorbell</code> —
+                add your own language's words if your entities are not named in English.
+              </p>
+            </div>
           </div>
 
           {error && (
@@ -312,18 +332,36 @@ export default function SettingsSheet({ open, onOpenChange, onCamerasChanged }: 
               </Badge>
             </div>
 
+            {settings?.app_password_set && (
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current Password</Label>
+                <Input
+                  id="current-password"
+                  type="password"
+                  placeholder="Required to change or remove"
+                  value={currentPassword}
+                  onChange={e => setCurrentPassword(e.target.value)}
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="app-password">New Password</Label>
               <Input
                 id="app-password"
                 type="password"
-                placeholder={settings?.app_password_set ? '(enter new password to change)' : 'Set a password…'}
+                placeholder={settings?.app_password_set ? '(blank removes the password)' : 'Set a password…'}
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
               />
             </div>
 
-            <Button variant="outline" className="w-full" onClick={savePassword} disabled={pwSaving}>
+            {pwError && (
+              <p className="text-sm text-destructive bg-destructive/10 rounded-lg px-3 py-2">{pwError}</p>
+            )}
+
+            <Button variant="outline" className="w-full" onClick={savePassword}
+              disabled={pwSaving || (Boolean(settings?.app_password_set) && !currentPassword)}>
               {pwSaving && <Loader2 className="h-4 w-4 animate-spin" />}
               {pwSaved && <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
               {pwSaved ? 'Saved!' : settings?.app_password_set ? 'Update Password' : 'Set Password'}

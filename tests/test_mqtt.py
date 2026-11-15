@@ -41,9 +41,9 @@ def test_a_ding_is_never_marked_as_a_person(app, mqtt_handler):
 
 
 def test_event_history_is_capped(app, mqtt_handler):
-    for i in range(120):
+    for i in range(app.MAX_EVENTS + 20):
         mqtt_handler(f"ring/loc1/camera/cam{i}/motion/state", "ON")
-    assert len(app.events) == 100
+    assert len(app.events) == app.MAX_EVENTS
 
 
 def test_newest_event_is_first(app, mqtt_handler):
@@ -164,3 +164,19 @@ def test_schedule_reports_failures(app, capsys):
     asyncio.run(drive())
     app._loop = None
     assert "Background task failed" in capsys.readouterr().out
+
+
+def test_mqtt_keeps_retrying_when_the_broker_is_down_at_startup(app, monkeypatch):
+    """A failed first connect used to skip loop_start(), so no events ever arrived."""
+    import paho.mqtt.client as mqtt
+
+    calls = []
+    monkeypatch.setattr(mqtt.Client, "connect_async",
+                        lambda self, *a, **kw: calls.append("connect_async"))
+    monkeypatch.setattr(mqtt.Client, "connect",
+                        lambda self, *a, **kw: (_ for _ in ()).throw(OSError("down")))
+    monkeypatch.setattr(mqtt.Client, "loop_start", lambda self: calls.append("loop_start"))
+
+    app.setup_mqtt()
+
+    assert calls == ["connect_async", "loop_start"]

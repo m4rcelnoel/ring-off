@@ -25,6 +25,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "RING_MQTT_STATE", tmp_path / "ring" / "ring-state.json")
     monkeypatch.setattr(main, "SETTINGS_FILE", tmp_path / "webapp" / "settings.json")
     monkeypatch.setattr(main, "VIDEO_PATH", tmp_path / "videos")
+    monkeypatch.setattr(main, "EVENTS_FILE", tmp_path / "webapp" / "events.json")
+    monkeypatch.setattr(main, "SNAPSHOT_DIR", tmp_path / "webapp" / "snapshots")
     monkeypatch.setattr(main, "RTSP_USER", "")
     monkeypatch.setattr(main, "RTSP_PASS", "")
 
@@ -39,6 +41,10 @@ def app(tmp_path, monkeypatch):
     main.motion_attrs.clear()
     main.ws_clients.clear()
     main.app_sessions.clear()
+    main._login_attempts.clear()
+    main.pending_auth.clear()
+    main._settings_cache = None
+    main._settings_mtime = None
     main._discovered_devices.clear()
     main._low_battery_notified.clear()
     main._device_availability.clear()
@@ -66,6 +72,8 @@ def mqtt_handler(app, monkeypatch):
         raise OSError("no broker in tests")
 
     monkeypatch.setattr(mqtt.Client, "connect", refuse)
+    monkeypatch.setattr(mqtt.Client, "connect_async", refuse)
+    monkeypatch.setattr(mqtt.Client, "loop_start", lambda self: None)
     client = app.setup_mqtt()
 
     class Msg:

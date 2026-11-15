@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import socket
+import time
 import unicodedata
 import re
 import secrets
@@ -59,6 +60,9 @@ MQTT_PORT         = int(os.getenv("MQTT_PORT",          "1883"))
 RING_CONTAINER    = os.getenv("RING_CONTAINER",         "ring-mqtt")
 RTSP_HOST         = os.getenv("RTSP_HOST",              "ring-mqtt")
 RTSP_PORT         = os.getenv("RTSP_PORT",              "8554")
+# ring-mqtt's own web UI. Unlike RTSP it is up before a Ring token exists, which
+# is exactly the state the setup wizard runs in.
+RING_MQTT_UI_PORT = os.getenv("RING_MQTT_UI_PORT",      "55123")
 # How go2rtc reaches ring-mqtt's RTSP server. go2rtc always runs in Docker, so
 # this stays a service name even when the backend itself runs on the host for
 # development and needs RTSP_HOST=localhost for its own ffmpeg pulls.
@@ -69,7 +73,33 @@ GO2RTC_RTSP_HOST  = os.getenv("GO2RTC_RTSP_HOST",       "ring-mqtt")
 RTSP_USER         = os.getenv("RTSP_USER",              "")
 RTSP_PASS         = os.getenv("RTSP_PASS",              "")
 VIDEO_PATH        = Path(os.getenv("VIDEO_PATH",        "/videos"))
-USER_AGENT        = "ring-off/1.1"
+# go2rtc's WebRTC media port as published on the Docker host (docker-compose.yml).
+WEBRTC_PORT       = int(os.getenv("WEBRTC_PORT",        "8555"))
+# Address browsers use to reach that port. Blank = the host the browser used to
+# reach this app, which is the same machine in the standard compose setup. Set
+# it when the app sits behind a reverse proxy on another host.
+WEBRTC_CANDIDATE_HOST = os.getenv("WEBRTC_CANDIDATE_HOST", "").strip()
+def _app_version() -> str:
+    """One version for the UI, the image and the Ring User-Agent.
+
+    Written into the image from the frontend's package.json at build time; the
+    env var is an escape hatch and "dev" covers running straight from a checkout.
+    """
+    if env := os.getenv("APP_VERSION"):
+        return env.strip()
+    here = Path(__file__).parent
+    try:                                    # written into the image at build time
+        return (here / "version.txt").read_text().strip() or "dev"
+    except OSError:
+        pass
+    try:                                    # running from a checkout
+        return json.loads((here / "frontend" / "package.json").read_text())["version"]
+    except Exception:
+        return "dev"
+
+
+APP_VERSION       = _app_version()
+USER_AGENT        = f"ring-off/{APP_VERSION}"
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 
@@ -79,7 +109,8 @@ ws_clients: set[WebSocket] = set()
 device_states: dict        = {}   # device_id → device info
 snapshots: dict[str, bytes]= {}   # device_id → latest JPEG bytes
 motion_attrs: dict         = {}   # device_id → latest motion/attributes payload
-app_sessions: set[str]     = set()  # active session tokens
+app_sessions: dict[str, float] = {}  # session token → expiry (unix seconds)
+_login_attempts: dict[str, list[float]] = {}  # client ip → recent failure times
 _loop: asyncio.AbstractEventLoop | None = None
 _low_battery_notified: set[str] = set()  # device_ids already alerted for low battery
 _device_availability: dict[str, str] = {}  # device_id → "online"/"offline"
@@ -102,20 +133,125 @@ SETTINGS_DEFAULTS: dict = {
     "notify_on_connection_lost": True,
     "app_password_hash":         "",
     "setup_complete":            False,
+    "ha_entity_filter":          "",   # comma-separated match terms, blank = ring,doorbell
     "camera_names":              {},   # device_id → friendly name
     "disabled_cameras":          [],   # device_ids the user chose not to show
 }
 
 
+_settings_cache: dict | None = None
+_settings_mtime: float | None = None
+_settings_lock = threading.Lock()
+
+
 def load_settings() -> dict:
-    if SETTINGS_FILE.exists():
-        return {**SETTINGS_DEFAULTS, **json.loads(SETTINGS_FILE.read_text())}
-    return dict(SETTINGS_DEFAULTS)
+    """Settings, cached until the file changes on disk.
+
+    This is read on every HTTP request by the auth middleware and on every MQTT
+    message, so the naive re-read was a synchronous file read and JSON parse per
+    MJPEG frame request. The mtime check keeps an external edit of settings.json
+    working.
+    """
+    global _settings_cache, _settings_mtime
+    try:
+        mtime = SETTINGS_FILE.stat().st_mtime
+    except OSError:
+        return dict(SETTINGS_DEFAULTS)
+
+    with _settings_lock:
+        if _settings_cache is None or mtime != _settings_mtime:
+            try:
+                stored = json.loads(SETTINGS_FILE.read_text())
+            except Exception:
+                return dict(SETTINGS_DEFAULTS)
+            _settings_cache = {**SETTINGS_DEFAULTS, **stored}
+            _settings_mtime = mtime
+        # Copy: callers mutate what they get back before saving it again.
+        return dict(_settings_cache)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a temp file and rename, so readers never see a partial file.
+
+    The recorder reads settings.json from another container on every event; a
+    plain write_text() truncates first, and a read in that window silently fell
+    back to defaults (recording re-enabled, retention reset).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 
 def save_settings(data: dict) -> None:
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    global _settings_cache, _settings_mtime
+    _atomic_write(SETTINGS_FILE, json.dumps(data, indent=2))
+    with _settings_lock:
+        _settings_cache = dict(data)
+        try:
+            _settings_mtime = SETTINGS_FILE.stat().st_mtime
+        except OSError:
+            _settings_mtime = None
+
+
+EVENTS_FILE    = Path(os.getenv("EVENTS_FILE", str(SETTINGS_FILE.parent / "events.json")))
+SNAPSHOT_DIR   = Path(os.getenv("SNAPSHOT_DIR", str(SETTINGS_FILE.parent / "snapshots")))
+MAX_EVENTS     = 200
+_snapshot_lock = threading.Lock()
+
+
+def load_events() -> None:
+    """Restore the event feed from disk.
+
+    Events lived only in memory, so every container update emptied the feed and
+    made it look like nothing had ever happened.
+    """
+    try:
+        stored = json.loads(EVENTS_FILE.read_text())
+    except Exception:
+        return
+    if isinstance(stored, list):
+        events.clear()
+        events.extend(stored[:MAX_EVENTS])
+        print(f"Restored {len(events)} events")
+
+
+def save_events() -> None:
+    try:
+        _atomic_write(EVENTS_FILE, json.dumps(events[:MAX_EVENTS]))
+    except Exception as e:
+        print(f"Could not persist events: {e}")
+
+
+def load_snapshots() -> None:
+    """Restore the last JPEG per camera, so thumbnails survive a restart."""
+    try:
+        for image in SNAPSHOT_DIR.glob("*.jpg"):
+            snapshots[image.stem] = image.read_bytes()
+    except Exception:
+        pass
+    if snapshots:
+        print(f"Restored {len(snapshots)} snapshots")
+
+
+def save_snapshot(device_id: str, payload: bytes) -> None:
+    with _snapshot_lock:
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            (SNAPSHOT_DIR / f"{device_id}.jpg").write_bytes(payload)
+        except Exception as e:
+            print(f"Could not persist snapshot for {device_id}: {e}")
+
+
+def forget_device(device_id: str) -> None:
+    """Drop every trace of a device the user has switched off."""
+    device_states.pop(device_id, None)
+    motion_attrs.pop(device_id, None)
+    snapshots.pop(device_id, None)
+    _device_availability.pop(device_id, None)
+    _low_battery_notified.discard(device_id)
+    with _snapshot_lock:
+        (SNAPSHOT_DIR / f"{device_id}.jpg").unlink(missing_ok=True)
 
 
 def load_ring_config() -> dict:
@@ -160,13 +296,20 @@ def save_ring_token(refresh_token: str) -> None:
 
 
 def restart_ring_mqtt() -> None:
+    """Nudge ring-mqtt to pick up a freshly written token.
+
+    Optional: without the Docker socket this fails harmlessly, and
+    config/ring-mqtt-init.sh restarts it from inside its container once the token
+    appears, so this only makes that a few seconds faster.
+    """
     try:
         client = docker.from_env()
         container = client.containers.get(RING_CONTAINER)
         container.restart()
         print("ring-mqtt restarted")
     except Exception as e:
-        print(f"Could not restart ring-mqtt: {e}")
+        print(f"Could not restart ring-mqtt ({e}) — it will retry with the new "
+              f"token within a few seconds (ring-mqtt-init.sh).")
 
 
 def restart_go2rtc() -> None:
@@ -473,6 +616,7 @@ def apply_camera_selection(selections: list) -> dict:
         if not sel.enabled:
             disabled.add(sel.device_id)
             names.pop(sel.device_id, None)
+            forget_device(sel.device_id)
             if index is not None:
                 drop.add(index)
                 match = pattern.match(lines[index].rstrip("\n"))
@@ -598,6 +742,7 @@ def setup_mqtt() -> mqtt.Client:
                 and parts[4] == "snapshot" and parts[5] == "image"):
             device_id = parts[3]
             snapshots[device_id] = msg.payload
+            save_snapshot(device_id, msg.payload)
             return
 
         # ── Text-based topics ─────────────────────────────────────────────────
@@ -633,8 +778,8 @@ def setup_mqtt() -> mqtt.Client:
                         "person_detected": person,
                     }
                     events.insert(0, event)
-                    if len(events) > 100:
-                        events.pop()
+                    del events[MAX_EVENTS:]
+                    save_events()
                     schedule(broadcast({"type": "event", "data": event}))
                     schedule(send_notification(event))
 
@@ -713,32 +858,40 @@ def setup_mqtt() -> mqtt.Client:
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
+    # connect_async + loop_start: the network thread keeps retrying until the
+    # broker answers. A blocking connect() that failed once (broker still
+    # starting, DNS not ready) skipped loop_start(), so the webapp never
+    # received a single MQTT message until it was restarted.
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     try:
-        client.connect(MQTT_HOST, MQTT_PORT, 60)
-        client.loop_start()
+        client.connect_async(MQTT_HOST, MQTT_PORT, 60)
     except Exception as e:
         print(f"MQTT connect failed: {e}")
+    client.loop_start()
     return client
 
 # ── Auth middleware ───────────────────────────────────────────────────────────
 
 _UNPROTECTED_PATHS = {"/api/app/status", "/api/app/login", "/api/status",
                       "/api/setup/state"}
-_PROTECTED_PREFIXES = ("/api/", "/ws/", "/stream/", "/recordings/")
+_PROTECTED_PREFIXES = ("/api/", "/ws/", "/stream/", "/recordings/", "/proxy/")
+
+
+def request_is_authorized(cookies) -> bool:
+    """Shared by the HTTP middleware and the WebSocket endpoints.
+
+    BaseHTTPMiddleware only ever sees `http` scopes — WebSocket handshakes go
+    straight past it — so the WebSocket routes have to check for themselves.
+    """
+    if not load_settings().get("app_password_hash"):
+        return True
+    return session_is_valid(cookies.get("ring_session", ""))
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        settings = load_settings()
-        if not settings.get("app_password_hash"):
-            return await call_next(request)
-
         path = request.url.path
-        if path in _UNPROTECTED_PATHS:
-            return await call_next(request)
-
-        token = request.cookies.get("ring_session", "")
-        if token and token in app_sessions:
+        if path in _UNPROTECTED_PATHS or request_is_authorized(request.cookies):
             return await call_next(request)
 
         # Block protected API / streaming paths
@@ -753,10 +906,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _loop
-    _loop = asyncio.get_event_loop()
+    _loop = asyncio.get_running_loop()
     ensure_go2rtc_config()
     sync_go2rtc_credentials()
     adopt_existing_install()
+    load_events()
+    load_snapshots()
     app.state.mqtt = setup_mqtt()
     yield
     app.state.mqtt.loop_stop()
@@ -788,6 +943,7 @@ class SettingsRequest(BaseModel):
     notify_on_low_battery: bool = True
     low_battery_threshold: int = 20
     notify_on_connection_lost: bool = True
+    ha_entity_filter: str = ""
 
 class TestNotificationRequest(BaseModel):
     notify_url: str = ""
@@ -805,6 +961,51 @@ class AppLoginRequest(BaseModel):
 
 class SetPasswordRequest(BaseModel):
     password: str
+    current_password: str = ""
+
+# ── Session and login-attempt bookkeeping ─────────────────────────────────────
+
+SESSION_TTL      = 86400 * 30   # matches the cookie lifetime
+LOGIN_WINDOW     = 300          # seconds a failed attempt is remembered
+LOGIN_MAX_TRIES  = 10           # failures per window before locking out
+PENDING_AUTH_TTL = 300          # a 2FA session holds the password in memory
+
+
+def _prune_sessions() -> None:
+    now = time.time()
+    for token, expiry in list(app_sessions.items()):
+        if expiry <= now:
+            del app_sessions[token]
+
+
+def session_is_valid(token: str) -> bool:
+    if not token:
+        return False
+    _prune_sessions()
+    return token in app_sessions
+
+
+def _login_blocked(client: str) -> bool:
+    """True once a client has burned through its failures for this window."""
+    now = time.time()
+    recent = [t for t in _login_attempts.get(client, []) if now - t < LOGIN_WINDOW]
+    if recent:
+        _login_attempts[client] = recent
+    else:
+        _login_attempts.pop(client, None)
+    return len(recent) >= LOGIN_MAX_TRIES
+
+
+def _record_login_failure(client: str) -> None:
+    _login_attempts.setdefault(client, []).append(time.time())
+
+
+def prune_pending_auth() -> None:
+    """Drop abandoned 2FA sessions — they hold the Ring password in memory."""
+    now = time.time()
+    for sid, session in list(pending_auth.items()):
+        if now - session.get("created", 0) > PENDING_AUTH_TTL:
+            del pending_auth[sid]
 
 # ── App authentication ────────────────────────────────────────────────────────
 
@@ -817,32 +1018,41 @@ async def app_auth_status(request: Request):
     token = request.cookies.get("ring_session", "")
     return {
         "auth_required": True,
-        "authenticated": bool(token and token in app_sessions),
+        "authenticated": session_is_valid(token),
     }
 
 
 @app.post("/api/app/login")
-async def app_login(req: AppLoginRequest, response: Response):
+async def app_login(req: AppLoginRequest, request: Request, response: Response):
     settings = load_settings()
     password_hash = settings.get("app_password_hash", "")
     if not password_hash:
         return {"success": True}
+
+    client = request.client.host if request.client else "unknown"
+    if _login_blocked(client):
+        raise HTTPException(
+            429, "Too many failed attempts — wait a few minutes and try again")
+
     if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
+        _record_login_failure(client)
         raise HTTPException(401, "Wrong password")
+
+    _login_attempts.pop(client, None)
     token = secrets.token_urlsafe(32)
-    app_sessions.add(token)
+    app_sessions[token] = time.time() + SESSION_TTL
+    _prune_sessions()
     response.set_cookie(
         "ring_session", token,
         httponly=True, samesite="lax",
-        max_age=86400 * 30,  # 30 days
+        max_age=SESSION_TTL,
     )
     return {"success": True}
 
 
 @app.post("/api/app/logout")
 async def app_logout(request: Request, response: Response):
-    token = request.cookies.get("ring_session", "")
-    app_sessions.discard(token)
+    app_sessions.pop(request.cookies.get("ring_session", ""), None)
     response.delete_cookie("ring_session")
     return {"success": True}
 
@@ -850,12 +1060,22 @@ async def app_logout(request: Request, response: Response):
 @app.post("/api/app/set-password")
 async def set_password(req: SetPasswordRequest):
     settings = load_settings()
+    existing = settings.get("app_password_hash", "")
+
+    # Changing or clearing an existing password requires proving you know it —
+    # a session alone is not enough, since a borrowed browser would do.
+    if existing and not bcrypt.checkpw(req.current_password.encode(), existing.encode()):
+        raise HTTPException(403, "Current password is incorrect")
+
     if req.password:
-        hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
-        settings["app_password_hash"] = hashed
+        settings["app_password_hash"] = bcrypt.hashpw(
+            req.password.encode(), bcrypt.gensalt()).decode()
     else:
         settings["app_password_hash"] = ""
     save_settings(settings)
+
+    # Any other browser holding a session is now stale.
+    app_sessions.clear()
     return {"success": True}
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -902,8 +1122,14 @@ def adopt_existing_install() -> None:
     choice is theirs, and re-adopting here would undo "Run setup again" on the
     next restart.
     """
-    stored = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.exists() else {}
-    if "setup_complete" in stored:
+    try:
+        stored = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.exists() else {}
+    except Exception as e:
+        # A corrupt file must not take the whole app down at startup;
+        # load_settings() already falls back to defaults for it.
+        print(f"Could not read {SETTINGS_FILE}: {e}")
+        return
+    if not isinstance(stored, dict) or "setup_complete" in stored:
         return
     if ring_token_present():
         settings = load_settings()
@@ -937,8 +1163,13 @@ async def setup_preflight():
         f"No broker at {MQTT_HOST}:{MQTT_PORT}. Run `docker compose ps mosquitto` "
         f"— without it no events or devices arrive.")
 
-    add("ring_mqtt", "ring-mqtt bridge",
-        await asyncio.to_thread(_tcp_open, RTSP_HOST, RTSP_PORT),
+    # RTSP alone is not enough: ring-mqtt only starts its RTSP server after it
+    # has authenticated with Ring, so on a fresh install this check failed, the
+    # wizard's Continue stayed disabled, and the Ring sign-in step — the thing
+    # that would bring RTSP up — was unreachable.
+    ring_mqtt_ok = (await asyncio.to_thread(_tcp_open, RTSP_HOST, RING_MQTT_UI_PORT)
+                    or await asyncio.to_thread(_tcp_open, RTSP_HOST, RTSP_PORT))
+    add("ring_mqtt", "ring-mqtt bridge", ring_mqtt_ok,
         "ring-mqtt is not answering. It shuts down on startup when "
         "data/ring-mqtt/config.json is missing — check `docker compose logs ring-mqtt`.")
 
@@ -1058,18 +1289,43 @@ async def setup_reset():
 
 # ── Ring auth ─────────────────────────────────────────────────────────────────
 
+def _capture_token() -> tuple[Auth, dict]:
+    """An Auth that records its token through the public updater callback.
+
+    python-ring-doorbell's third constructor argument exists exactly for this.
+    Reading `auth._token` instead worked but depended on a private attribute, so
+    a routine dependency bump could have broken Ring sign-in silently.
+    """
+    captured: dict = {}
+    auth = Auth(USER_AGENT, None, captured.update)
+    return auth, captured
+
+
+def _refresh_token_from(auth: Auth, captured: dict) -> str:
+    token = captured.get("refresh_token")
+    if token:
+        return token
+    # Older releases only populate the callback on a later refresh.
+    token = getattr(auth, "_token", {}).get("refresh_token")
+    if not token:
+        raise HTTPException(502, "Ring returned no refresh token")
+    return token
+
+
 @app.post("/api/auth/ring")
 async def ring_login(req: RingLoginRequest):
-    auth = Auth(USER_AGENT, None, lambda t: None)
+    auth, captured = _capture_token()
     try:
         await auth.async_fetch_token(req.email, req.password)
-        save_ring_token(auth._token["refresh_token"])
+        save_ring_token(_refresh_token_from(auth, captured))
         await auth.async_close()
         restart_ring_mqtt()
         return {"success": True}
     except Requires2FAError:
         sid = str(uuid.uuid4())
-        pending_auth[sid] = {"auth": auth, "email": req.email, "password": req.password}
+        prune_pending_auth()
+        pending_auth[sid] = {"auth": auth, "captured": captured, "email": req.email,
+                             "password": req.password, "created": time.time()}
         return {"needs_2fa": True, "session_id": sid}
     except Exception as e:
         raise HTTPException(400, str(e))
@@ -1077,13 +1333,14 @@ async def ring_login(req: RingLoginRequest):
 
 @app.post("/api/auth/ring/verify")
 async def ring_verify(req: RingVerifyRequest):
+    prune_pending_auth()
     session = pending_auth.get(req.session_id)
     if not session:
         raise HTTPException(400, "Invalid or expired session — please log in again")
     auth: Auth = session["auth"]
     try:
         await auth.async_fetch_token(session["email"], session["password"], req.code)
-        save_ring_token(auth._token["refresh_token"])
+        save_ring_token(_refresh_token_from(auth, session.get("captured", {})))
         await auth.async_close()
         pending_auth.pop(req.session_id, None)
         restart_ring_mqtt()
@@ -1169,6 +1426,7 @@ async def get_settings():
         "notify_on_low_battery":     s.get("notify_on_low_battery", True),
         "low_battery_threshold":     s.get("low_battery_threshold", 20),
         "notify_on_connection_lost": s.get("notify_on_connection_lost", True),
+        "ha_entity_filter": s.get("ha_entity_filter", ""),
         "app_password_set": bool(s.get("app_password_hash")),
     }
 
@@ -1190,9 +1448,22 @@ async def save_settings_route(req: SettingsRequest):
         "notify_on_low_battery":     req.notify_on_low_battery,
         "low_battery_threshold":     max(1, min(100, req.low_battery_threshold)),
         "notify_on_connection_lost": req.notify_on_connection_lost,
+        "ha_entity_filter":          req.ha_entity_filter,
     }
     save_settings(updated)
     return {"success": True}
+
+
+def ha_filter_terms() -> list[str]:
+    """Substrings that mark a Home Assistant entity as interesting.
+
+    Configurable because entity names are language-specific — the default list
+    used to be hardcoded and included one German word from the author's own
+    setup, which matched nothing for anyone else.
+    """
+    raw = load_settings().get("ha_entity_filter") or ""
+    terms = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    return terms or ["ring", "doorbell"]
 
 
 @app.get("/api/ha/entities")
@@ -1208,14 +1479,14 @@ async def get_ha_entities():
             )
             if resp.status_code != 200:
                 raise HTTPException(resp.status_code, "HA API error")
-            all_states = resp.json()
-            ring_entities = [
-                e for e in all_states
-                if "ring" in e["entity_id"].lower()
-                or "doorbell" in e["entity_id"].lower()
-                or "haustür" in e["attributes"].get("friendly_name", "").lower()
+            terms = ha_filter_terms()
+            return [
+                e for e in resp.json()
+                if any(term in e["entity_id"].lower()
+                       or term in str(e.get("attributes", {})
+                                       .get("friendly_name", "")).lower()
+                       for term in terms)
             ]
-            return ring_entities
     except HTTPException:
         raise
     except Exception as e:
@@ -1244,13 +1515,21 @@ async def get_recordings():
     return clips
 
 
+def _clip_path(device_id: str, filename: str) -> Path:
+    """Resolve a clip inside VIDEO_PATH, or raise. Only .mp4 files qualify."""
+    for part in (device_id, filename):
+        if (not part or part in (".", "..") or ".." in part
+                or "/" in part or "\\" in part or part.startswith(".")):
+            raise HTTPException(400, "Invalid path")
+    clip_path = VIDEO_PATH / device_id / filename
+    if clip_path.suffix != ".mp4" or not clip_path.is_file():
+        raise HTTPException(404, "Clip not found")
+    return clip_path
+
+
 @app.get("/recordings/files/{device_id}/{filename}")
 async def serve_recording(device_id: str, filename: str, request: Request):
-    if ".." in device_id or ".." in filename or "/" in device_id or "/" in filename:
-        raise HTTPException(400, "Invalid path")
-    clip_path = VIDEO_PATH / device_id / filename
-    if not clip_path.exists() or clip_path.suffix != ".mp4":
-        raise HTTPException(404, "Clip not found")
+    clip_path = _clip_path(device_id, filename)
 
     file_size = clip_path.stat().st_size
     range_header = request.headers.get("range")
@@ -1278,6 +1557,10 @@ async def serve_recording(device_id: str, filename: str, request: Request):
             start = int(match.group(1))
             end = int(match.group(2)) if match.group(2) else file_size - 1
             end = min(end, file_size - 1)
+            if start >= file_size or start > end:
+                # Unsatisfiable: a negative length used to reach f.read() and 500.
+                return Response(status_code=416,
+                                headers={"Content-Range": f"bytes */{file_size}"})
             return StreamingResponse(
                 make_iter(start, end),
                 status_code=206,
@@ -1302,12 +1585,8 @@ async def serve_recording(device_id: str, filename: str, request: Request):
 
 @app.delete("/api/recordings/{device_id}/{filename}")
 async def delete_recording(device_id: str, filename: str):
-    if ".." in device_id or ".." in filename or "/" in device_id or "/" in filename:
-        raise HTTPException(400, "Invalid path")
-    clip_path = VIDEO_PATH / device_id / filename
-    if not clip_path.exists():
-        raise HTTPException(404, "Clip not found")
-    clip_path.unlink()
+    # Same rules as serving: this used to delete any file in a camera folder.
+    _clip_path(device_id, filename).unlink()
     return {"success": True}
 
 # ── MJPEG streaming via ffmpeg ────────────────────────────────────────────────
@@ -1374,22 +1653,27 @@ async def stream_mjpeg(stream_name: str):
 
 # ── go2rtc HTTP proxy ─────────────────────────────────────────────────────────
 
-@app.api_route("/proxy/go2rtc/{path:path}", methods=["GET", "POST", "OPTIONS"])
+@app.get("/proxy/go2rtc/{path:path}")
 async def proxy_go2rtc(request: Request, path: str):
+    # The frontend only loads go2rtc's player script through here. Forwarding
+    # arbitrary methods and paths exposed go2rtc's whole REST API — including
+    # POST /api/streams, which can register exec: sources — and /api/config,
+    # which contains the RTSP credentials.
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+\.js", path):
+        raise HTTPException(404, "Not found")
     url = f"{GO2RTC_URL}/{path}"
     params = dict(request.query_params)
     forward_headers = {
         k: v for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length")
+        if k.lower() not in ("host", "content-length", "cookie", "authorization")
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.request(
-                method=request.method,
+                method="GET",
                 url=url,
                 params=params,
                 headers=forward_headers,
-                content=await request.body(),
             )
         skip = {"transfer-encoding", "connection", "keep-alive"}
         headers = {k: v for k, v in resp.headers.items() if k.lower() not in skip}
@@ -1399,10 +1683,62 @@ async def proxy_go2rtc(request: Request, path: str):
 
 # ── go2rtc WebSocket proxy (WebRTC video streams) ─────────────────────────────
 
+def _split_host(host_header: str) -> str:
+    """'nas:8080' → 'nas', '[fe80::1]:8080' → 'fe80::1'."""
+    host = host_header.strip()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    return host
+
+
+def webrtc_candidates(host_header: str) -> list[str]:
+    """ICE candidates pointing at go2rtc's published WebRTC port.
+
+    go2rtc runs on a Docker bridge network and only knows its container IP and,
+    via STUN, the public IP — neither of which a browser on the LAN can use. So
+    WebRTC never connected: the player fell back to MSE, which macOS/Safari's
+    hardware decoder rejects for Ring's H.264 after a second ("played briefly,
+    then error"). The browser already told us how it reaches this machine, and
+    the compose file publishes 8555 on that same machine.
+    """
+    host = WEBRTC_CANDIDATE_HOST or _split_host(host_header)
+    if not host:
+        return []
+    try:
+        socket.inet_pton(socket.AF_INET6 if ":" in host else socket.AF_INET, host)
+        addresses = [host]
+    except OSError:
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            addresses = list(dict.fromkeys(i[4][0] for i in infos))
+        except OSError:
+            # mDNS names do not resolve inside a container, but browsers resolve
+            # .local candidates themselves.
+            addresses = [host] if host.endswith(".local") else []
+            if not addresses:
+                print(f"WebRTC: cannot resolve '{host}' — set WEBRTC_CANDIDATE_HOST")
+
+    candidates = []
+    for n, address in enumerate(addresses):
+        candidates.append(
+            f"candidate:ro{n}u 1 udp 2130706431 {address} {WEBRTC_PORT} typ host")
+        candidates.append(
+            f"candidate:ro{n}t 1 tcp 1518280447 {address} {WEBRTC_PORT} typ host tcptype passive")
+    return candidates
+
+
 @app.websocket("/ws/video")
 async def video_proxy(websocket: WebSocket, src: str):
+    if not request_is_authorized(websocket.cookies):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
-    upstream_url = f"{GO2RTC_WS}/api/ws?src={src}"
+    host_header = (websocket.headers.get("x-forwarded-host", "").split(",")[0]
+                   or websocket.headers.get("host", ""))
+    # Encoded: a raw "&" or "#" in src would inject extra upstream parameters.
+    upstream_url = f"{GO2RTC_WS}/api/ws?src={quote(src, safe='')}"
     try:
         async with ws_lib.connect(upstream_url) as upstream:
             async def to_upstream():
@@ -1427,12 +1763,29 @@ async def video_proxy(websocket: WebSocket, src: str):
                     async for message in upstream:
                         if isinstance(message, bytes):
                             await websocket.send_bytes(message)
-                        else:
-                            await websocket.send_text(message)
+                            continue
+                        await websocket.send_text(message)
+                        # Candidates are only accepted once the answer is set,
+                        # so they follow it directly.
+                        if '"webrtc/answer"' in message:
+                            for candidate in await asyncio.to_thread(
+                                    webrtc_candidates, host_header):
+                                await websocket.send_text(json.dumps(
+                                    {"type": "webrtc/candidate", "value": candidate}))
                 except Exception:
                     pass
 
-            await asyncio.gather(to_upstream(), to_client())
+            # Whichever side ends first ends the session. gather() waited for
+            # both: once WebRTC is up go2rtc sends nothing more over this
+            # socket, so after the browser left, to_client() blocked forever,
+            # the go2rtc consumer stayed open and so did the Ring livestream —
+            # draining the doorbell's battery with nobody watching.
+            tasks = [asyncio.create_task(to_upstream()),
+                     asyncio.create_task(to_client())]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:
         print(f"Video proxy error ({src}): {e}")
     finally:
@@ -1445,6 +1798,9 @@ async def video_proxy(websocket: WebSocket, src: str):
 
 @app.websocket("/ws/events")
 async def events_ws(websocket: WebSocket):
+    if not request_is_authorized(websocket.cookies):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     ws_clients.add(websocket)
     await websocket.send_json({"type": "history", "data": events})

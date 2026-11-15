@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
 import CameraCard, { VideoPlayer } from '@/components/CameraCard'
+import { useAspect } from '@/lib/aspect'
 import ChimeCard from '@/components/ChimeCard'
 import EventsFeed from '@/components/EventsFeed'
 import HAPanel from '@/components/HAPanel'
@@ -93,7 +94,7 @@ export default function Dashboard() {
           </div>
 
           {loadingCams ? (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               <Skeleton className="aspect-video rounded-xl" />
               <Skeleton className="aspect-video rounded-xl" />
             </div>
@@ -102,7 +103,7 @@ export default function Dashboard() {
               <span className="text-sm">No cameras found — is ring-mqtt running?</span>
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {cameras.map(cam => (
                 <CameraCard
                   key={cam.id}
@@ -197,9 +198,7 @@ export default function Dashboard() {
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            <div className="aspect-video">
-              <VideoPlayer streamName={expandedCamera.stream} />
-            </div>
+            <ExpandedVideo stream={expandedCamera.stream} />
           </div>
         </div>
       )}
@@ -237,6 +236,22 @@ export default function Dashboard() {
         onOpenChange={setSettingsOpen}
         onCamerasChanged={loadCameras}
       />
+    </div>
+  )
+}
+
+
+/**
+ * The expanded player keeps the camera's own shape, but a square feed at
+ * max-w-4xl would be taller than most screens — so it is capped at 80vh and
+ * narrows to match instead of stretching.
+ */
+function ExpandedVideo({ stream }: { stream: string }) {
+  const aspect = useAspect(stream)
+  return (
+    <div className="mx-auto max-w-full"
+      style={{ aspectRatio: aspect, width: `min(100%, calc(80vh * ${aspect}))` }}>
+      <VideoPlayer streamName={stream} />
     </div>
   )
 }

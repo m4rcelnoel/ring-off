@@ -160,5 +160,191 @@ def test_a_wrong_password_is_rejected(app):
 
 def test_clearing_the_password_reopens_the_api(app):
     asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
-    asyncio.run(app.set_password(app.SetPasswordRequest(password="")))
+    asyncio.run(app.set_password(
+        app.SetPasswordRequest(password="", current_password="hunter2")))
     assert client(app).get("/api/settings").status_code == 200
+
+
+# ── Password changes ──────────────────────────────────────────────────────────
+
+def test_changing_a_password_requires_the_current_one(app):
+    """A session alone is not enough — a borrowed browser would qualify."""
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(app.set_password(app.SetPasswordRequest(password="new-one")))
+    assert err.value.status_code == 403
+
+
+def test_a_wrong_current_password_is_rejected(app):
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(app.set_password(
+            app.SetPasswordRequest(password="new-one", current_password="guess")))
+    assert err.value.status_code == 403
+
+
+def test_the_first_password_needs_no_current_one(app):
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    assert app.load_settings()["app_password_hash"]
+
+
+def test_changing_the_password_invalidates_existing_sessions(app):
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    session = client(app)
+    session.post("/api/app/login", json={"password": "hunter2"})
+    assert session.get("/api/settings").status_code == 200
+
+    asyncio.run(app.set_password(
+        app.SetPasswordRequest(password="different", current_password="hunter2")))
+
+    assert session.get("/api/settings").status_code == 401
+
+
+# ── Login throttling and session expiry ───────────────────────────────────────
+
+def test_repeated_failures_lock_the_client_out(app):
+    """Without this the bcrypt hash can be brute-forced at full speed."""
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    session = client(app)
+
+    for _ in range(app.LOGIN_MAX_TRIES):
+        assert session.post("/api/app/login", json={"password": "wrong"}).status_code == 401
+
+    locked = session.post("/api/app/login", json={"password": "wrong"})
+    assert locked.status_code == 429
+
+    # Even the correct password is refused while locked out.
+    assert session.post("/api/app/login", json={"password": "hunter2"}).status_code == 429
+
+
+def test_a_successful_login_clears_the_failure_count(app):
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    session = client(app)
+
+    session.post("/api/app/login", json={"password": "wrong"})
+    session.post("/api/app/login", json={"password": "hunter2"})
+
+    assert app._login_attempts == {}
+
+
+def test_old_failures_fall_out_of_the_window(app, monkeypatch):
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    stale = app.time.time() - app.LOGIN_WINDOW - 1
+    app._login_attempts["testclient"] = [stale] * app.LOGIN_MAX_TRIES
+    assert app._login_blocked("testclient") is False
+
+
+def test_an_expired_session_stops_working(app):
+    asyncio.run(app.set_password(app.SetPasswordRequest(password="hunter2")))
+    session = client(app)
+    session.post("/api/app/login", json={"password": "hunter2"})
+    assert session.get("/api/settings").status_code == 200
+
+    for token in list(app.app_sessions):
+        app.app_sessions[token] = app.time.time() - 1
+
+    assert session.get("/api/settings").status_code == 401
+    assert app.app_sessions == {}, "expired sessions should be pruned, not just refused"
+
+
+# ── Pending 2FA sessions ──────────────────────────────────────────────────────
+
+def test_abandoned_2fa_sessions_are_dropped(app):
+    """They hold the Ring email and password in plaintext."""
+    app.pending_auth["old"] = {"auth": None, "email": "a@b.c", "password": "secret",
+                               "created": app.time.time() - app.PENDING_AUTH_TTL - 1}
+    app.pending_auth["fresh"] = {"auth": None, "email": "a@b.c", "password": "secret",
+                                 "created": app.time.time()}
+
+    app.prune_pending_auth()
+
+    assert "old" not in app.pending_auth
+    assert "fresh" in app.pending_auth
+
+
+# ── Settings cache ────────────────────────────────────────────────────────────
+
+def test_settings_are_cached_between_reads(app):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "record_duration": 90})
+    assert app.load_settings()["record_duration"] == 90
+    assert app.load_settings()["record_duration"] == 90
+
+
+def test_an_external_edit_is_picked_up(app):
+    """settings.json is documented as hand-editable."""
+    app.save_settings({**app.SETTINGS_DEFAULTS, "record_duration": 90})
+    assert app.load_settings()["record_duration"] == 90
+
+    import time as _time
+    _time.sleep(0.01)
+    app.SETTINGS_FILE.write_text(json.dumps({"record_duration": 120}))
+
+    assert app.load_settings()["record_duration"] == 120
+
+
+def test_callers_cannot_mutate_the_cache(app):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "record_duration": 90})
+    first = app.load_settings()
+    first["record_duration"] = 999
+    assert app.load_settings()["record_duration"] == 90
+
+
+# ── Version ───────────────────────────────────────────────────────────────────
+
+def test_the_ring_user_agent_carries_the_app_version(app):
+    """It was pinned at "ring-off/1.1" and never moved again."""
+    assert app.USER_AGENT == f"ring-off/{app.APP_VERSION}"
+    assert "1.1" not in app.USER_AGENT or app.APP_VERSION == "1.1"
+
+
+def test_the_version_can_be_overridden_by_the_environment(app, monkeypatch):
+    monkeypatch.setenv("APP_VERSION", "9.9.9")
+    assert app._app_version() == "9.9.9"
+
+
+def test_the_version_falls_back_to_dev(app, monkeypatch):
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.setattr(app, "__file__", "/nonexistent/main.py")
+    assert app._app_version() == "dev"
+
+
+# ── Home Assistant entity filter ──────────────────────────────────────────────
+
+def test_the_default_filter_is_language_neutral(app):
+    """It used to hardcode one German word from the author's own setup."""
+    assert app.ha_filter_terms() == ["ring", "doorbell"]
+
+
+def test_the_filter_is_configurable(app):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "ha_entity_filter": "Haustür, Klingel"})
+    assert app.ha_filter_terms() == ["haustür", "klingel"]
+
+
+def test_a_blank_filter_falls_back_to_the_default(app):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "ha_entity_filter": "  ,  "})
+    assert app.ha_filter_terms() == ["ring", "doorbell"]
+
+
+def test_entities_are_matched_on_id_and_friendly_name(app, monkeypatch):
+    app.save_settings({**app.SETTINGS_DEFAULTS, "ha_url": "http://ha:8123",
+                       "ha_token": "t", "ha_entity_filter": "haustür"})
+
+    states = [
+        {"entity_id": "binary_sensor.haustuer", "attributes": {"friendly_name": "Haustür"}},
+        {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen"}},
+        {"entity_id": "sensor.haustür_battery", "attributes": {}},
+    ]
+
+    class Response:
+        status_code = 200
+        @staticmethod
+        def json(): return states
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None): return Response()
+
+    monkeypatch.setattr(app.httpx, "AsyncClient", lambda **kw: Client())
+    found = {e["entity_id"] for e in asyncio.run(app.get_ha_entities())}
+    assert found == {"binary_sensor.haustuer", "sensor.haustür_battery"}

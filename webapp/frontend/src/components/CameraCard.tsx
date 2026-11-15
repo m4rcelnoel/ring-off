@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Maximize2, Play, VideoOff, BatteryLow, Wifi } from 'lucide-react'
+import { Loader2, Maximize2, Play, VideoOff, BatteryLow, Wifi } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useVideoRtc } from '@/hooks/useVideoRtc'
+import { reportAspect, useAspect } from '@/lib/aspect'
 import type { Camera, DeviceState } from '@/types'
 
 // Tell TypeScript about the go2rtc custom element
@@ -26,7 +27,8 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
   streamName: string
   mode?: 'webrtc' | 'mjpeg'
 }) {
-  const rtcReady = useVideoRtc()
+  const rtcState = useVideoRtc()
+  const rtcReady = rtcState === 'ready'
   const [mode, setMode] = useState<'webrtc' | 'mjpeg'>(initialMode)
   const playerRef = useRef<HTMLElement | null>(null)
 
@@ -42,6 +44,21 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
     const el = playerRef.current as (HTMLElement & { src?: string }) | null
     if (el) el.src = wsUrl
   }, [wsUrl, rtcReady, mode])
+
+  // The live picture is the authority on the camera's shape; 'resize' also
+  // fires when a camera switches resolution mid-stream.
+  useEffect(() => {
+    const video = playerRef.current?.querySelector('video')
+    if (!video) return
+    const update = () => reportAspect(streamName, video.videoWidth, video.videoHeight)
+    update()
+    video.addEventListener('resize', update)
+    video.addEventListener('loadedmetadata', update)
+    return () => {
+      video.removeEventListener('resize', update)
+      video.removeEventListener('loadedmetadata', update)
+    }
+  }, [streamName, rtcReady, mode])
 
   if (mode === 'webrtc' && rtcReady) {
     return (
@@ -63,8 +80,37 @@ export function VideoPlayer({ streamName, mode: initialMode = 'webrtc' }: {
     )
   }
 
+  if (mode === 'webrtc' && rtcState === 'loading') {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-white/40" />
+      </div>
+    )
+  }
+
+  return <MjpegStream streamName={streamName} />
+}
+
+// A 1×1 transparent GIF, used to abort the MJPEG request on unmount.
+const BLANK_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='
+
+/**
+ * Chrome keeps a multipart/x-mixed-replace image downloading after the <img>
+ * leaves the DOM. Each one is an ffmpeg process in the backend holding the Ring
+ * livestream open — so "Stop" left the doorbell streaming (and draining its
+ * battery). Pointing src elsewhere before unmount aborts the request.
+ */
+function MjpegStream({ streamName }: { streamName: string }) {
+  const imgRef = useRef<HTMLImageElement | null>(null)
+
+  useEffect(() => {
+    const img = imgRef.current
+    return () => { if (img) img.src = BLANK_IMAGE }
+  }, [streamName])
+
   return (
     <img
+      ref={imgRef}
       src={`/stream/${streamName}`}
       className="w-full h-full object-cover"
       alt={streamName}
@@ -95,15 +141,18 @@ function WifiIndicator({ signal }: { signal: number }) {
 export default function CameraCard({ camera, onExpand, deviceState }: Props) {
   const [active, setActive] = useState(false)
   const [snapshotOk, setSnapshotOk] = useState(true)
+  const aspect = useAspect(camera.stream)
 
-  const snapshotUrl = camera.device_id && snapshotOk
+  // Only request a snapshot the backend actually has cached. Requesting one
+  // unconditionally makes every card without a snapshot log a 404 (PR #1).
+  const snapshotUrl = camera.device_id && camera.has_snapshot && snapshotOk
     ? `/api/snapshot/${camera.device_id}`
     : null
 
   return (
     <div className="group relative rounded-xl border border-border bg-card overflow-hidden hover:border-primary/50 transition-colors">
       {/* Video area */}
-      <div className="relative aspect-video bg-black">
+      <div className="relative bg-black" style={{ aspectRatio: aspect }}>
         {active ? (
           <VideoPlayer streamName={camera.stream} />
         ) : (
@@ -117,6 +166,8 @@ export default function CameraCard({ camera, onExpand, deviceState }: Props) {
                   src={snapshotUrl}
                   className="absolute inset-0 w-full h-full object-cover opacity-70"
                   alt="snapshot"
+                  onLoad={e => reportAspect(camera.stream,
+                    e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
                   onError={() => setSnapshotOk(false)}
                 />
                 <div className="relative flex flex-col items-center gap-2 text-white drop-shadow">
