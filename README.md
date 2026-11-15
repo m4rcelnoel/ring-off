@@ -22,10 +22,10 @@ Other Ring cameras that work with [ring-mqtt](https://github.com/tsightler/ring-
 ## Features
 
 - **Live streams** — go2rtc's player negotiates WebRTC, MSE or MJPEG automatically, whichever the browser and network allow
-- **Snapshot previews** — camera cards show the latest JPEG thumbnail before you start a stream
+- **Snapshot previews** — camera cards show the latest JPEG thumbnail before you start a stream, sized to each camera's own aspect ratio
 - **Person detection** — motion events with an identified person get a distinct badge in the event feed
 - **Motion & ding recording** — clips saved locally on every event, configurable per type and duration
-- **Recordings browser** — browse, play, and delete clips directly from the sidebar
+- **Recordings browser** — browse, play, and delete clips from the sidebar (bottom bar on phones)
 - **Clip retention policy** — auto-delete recordings older than a configurable number of days
 - **Push notifications** — ntfy.sh and Gotify support; per-event-type toggles for motion, ding, low battery, and connection lost
 - **Auto-discovery** — new cameras found in MQTT are automatically added to go2rtc (no manual config)
@@ -34,7 +34,8 @@ Other Ring cameras that work with [ring-mqtt](https://github.com/tsightler/ring-
 - **Device status** — battery level and WiFi signal for cameras; WiFi signal for chimes
 - **Ring login in the UI** — OAuth2 with 2FA support, no manual config file editing
 - **Home Assistant panel** — browse Ring-related HA entities directly from the dashboard
-- **NAS-ready** — change one volume mount to store recordings on your NAS
+- **NAS-ready** — point the recordings folder at your NAS with a two-line override
+- **Works on phones** — responsive layout with a bottom navigation bar
 - **Multi-arch Docker images** — runs on x86-64 and Raspberry Pi (arm64)
 
 ---
@@ -42,46 +43,47 @@ Other Ring cameras that work with [ring-mqtt](https://github.com/tsightler/ring-
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          Your Network                           │
-│                                                                 │
-│   Browser                                                       │
-│     │  HTTP / WebSocket                                         │
-│     ▼                                                           │
-│  ┌──────────────────────────────┐                               │
-│  │   webapp  :8080              │  FastAPI backend              │
-│  │   React frontend             │  + React UI (built-in)        │
-│  └──────┬───────────────────────┘                               │
-│         │                                                       │
-│    ┌────┴──────────────────────────────────────┐                │
-│    │                                           │                │
-│    ▼  HTTP proxy / MJPEG stream                ▼  MQTT sub      │
-│  ┌────────────────┐                   ┌─────────────────┐       │
-│  │  go2rtc  :1984 │  RTSP relay       │  mosquitto:1883 │       │
-│  └───────┬────────┘                   └────────┬────────┘       │
-│          │  RTSP pull                          │  MQTT pub      │
-│          ▼                                     ▼                │
-│  ┌───────────────────────────────────────────────────────┐      │
-│  │               ring-mqtt  :8554 (RTSP)                 │      │
-│  │         Ring ↔ MQTT bridge + WebRTC → RTSP            │      │
-│  └───────────────────────┬───────────────────────────────┘      │
-│                          │  WebRTC / TLS                        │
-│    ┌─────────────────┐   │                                      │
-│    │  recorder       │   │                                      │
-│    │  (ffmpeg clips) │   │                                      │
-│    └────────┬────────┘   │                                      │
-│             │ RTSP pull  │                                      │
-│             └────────────┘                                      │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                      Ring Cloud ☁️
+                       Browser  (desktop or phone)
+                          │                    │
+             UI, API, WebSockets          WebRTC media
+                 port 8080              port 8555 tcp+udp
+                          │                    │
+┌─ Docker network ────────┼────────────────────┼─────────────────────────┐
+│                         ▼                    ▼                         │
+│          ┌─────────────────────────┐  ┌─────────────────────────┐      │
+│          │ webapp            8080  │─▶│ go2rtc            1984  │      │
+│          │ FastAPI + React UI      │ a│ live-stream relay       │      │
+│          └──┬───────────────────┬──┘  └────────────┬────────────┘      │
+│             │ b                 │ c                │ RTSP              │
+│             ▼                   ▼                  ▼                   │
+│  ┌──────────────────┐   ┌─────────────────────────────────────────┐    │
+│  │ mosquitto  1883  │◀──│ ring-mqtt                         8554  │    │
+│  │ MQTT broker      │   │ Ring ↔ MQTT bridge + RTSP server        │    │
+│  └────────┬─────────┘   └────────────────────▲────────────────┬───┘    │
+│           │ MQTT                             │ RTSP           │        │
+│           ▼                                  │                │        │
+│  ┌───────────────────────────────────────────┴───┐            │        │
+│  │ recorder        ffmpeg clips on motion / ding │            │        │
+│  └───────────────────────────────────────────────┘            │        │
+└───────────────────────────────────────────────────────────────┼────────┘
+                                                                │ WebRTC / TLS
+                                                                ▼
+                                                           Ring cloud ☁
 
-Persistent data (./data/, gitignored)
-  ├── ring-mqtt/    Ring OAuth token + RTSP credentials
-  ├── webapp/       settings.json
-  ├── videos/       recorded MP4 clips
-  └── mosquitto/    MQTT message persistence
+  a  WebRTC signalling and the player script, proxied by the webapp
+  b  events and device state (MQTT subscribe)
+  c  RTSP for the MJPEG fallback, transcoded by the webapp's ffmpeg
+
+  Only ports 8080 and 8555 are published; everything else stays on the
+  Docker network.
+
+Persistent data
+  data/                 gitignored
+  ├── ring-mqtt/        config.json (RTSP credentials), ring-state.json (Ring token)
+  ├── webapp/           settings.json, events.json, snapshots/
+  ├── videos/           recorded MP4 clips (or a NAS, see NAS Recording)
+  └── mosquitto/        broker persistence
+  config/go2rtc.yaml    camera streams, maintained by the webapp (gitignored)
 ```
 
 ---
@@ -91,7 +93,7 @@ Persistent data (./data/, gitignored)
 | Requirement | Version |
 |---|---|
 | Docker | 24+ |
-| Docker Compose | v2 (plugin) |
+| Docker Compose | v2.20+ (plugin) |
 | Ring account | any — subscription **not** required |
 
 ---
@@ -113,7 +115,13 @@ docker compose up -d
 
 > **No config files to copy.** `config/go2rtc.yaml` is created automatically on first start, and cameras are added to it as they are discovered. There is no `.env` to fill in — the RTSP credentials for ring-mqtt's internal stream server are generated by ring-mqtt itself and picked up automatically.
 
-> **Optional services:** `go2rtc` (live streaming) and `recorder` (clip recording) are included by default. If you don't need one of them, comment out or remove its block in `docker-compose.yml`.
+> **Optional services:** `go2rtc` (live streaming) and `recorder` (clip recording) are included by default. To switch one off without editing `docker-compose.yml`, give it an inactive profile in `docker-compose.override.yml`:
+>
+> ```yaml
+> services:
+>   recorder:
+>     profiles: ["disabled"]
+> ```
 
 **3. Open the web UI and follow the setup wizard**
 
@@ -126,11 +134,11 @@ Navigate to **http://\<your-server-ip\>:8080**. The wizard walks you through it:
 5. **Alerts** — optional clip recording and push notifications, with a button that sends a test and reports what actually happened
 6. **Finish** — optionally set a dashboard password
 
-The refresh token is saved to `data/ring-mqtt/ring-state.json` and ring-mqtt reconnects automatically. You only need to do this once; the token persists across restarts.
+The refresh token is saved to `data/ring-mqtt/ring-state.json`, and ring-mqtt is restarted within a few seconds to load it. You only need to do this once; the token persists across restarts.
 
 Afterwards, **Settings → Cameras** lets you rename a camera or hide it from the dashboard at any time — no need to re-run setup. **Run setup again** in the same panel replays the whole wizard if you want to re-check services or sign in to a different Ring account.
 
-> ring-mqtt also has its own token setup UI on `:55123`. You no longer need it, but it still works if you prefer it or if the in-app login fails.
+> ring-mqtt also has its own token setup UI on port 55123. You no longer need it, and it is not published because it has no authentication. As a fallback if the in-app login fails, publish it temporarily in `docker-compose.override.yml` (`ring-mqtt: ports: ["55123:55123"]`) and remove it again afterwards.
 
 ---
 
@@ -167,7 +175,7 @@ Ring camera streams are served by **go2rtc**, which re-streams ring-mqtt's inter
 
 ### Manual setup (optional)
 
-If you prefer to name your cameras yourself, edit `config/go2rtc.yaml` — it is created for you on first start.
+To rename a camera or hide it, use **Settings → Cameras** in the web UI — no file editing needed. Editing `config/go2rtc.yaml` by hand is only for unusual setups, such as streams that point at other hardware; Ring Off leaves entries it did not create alone.
 
 #### Finding your device IDs
 
@@ -207,7 +215,7 @@ docker compose restart go2rtc webapp
 
 ### Environment variables
 
-None are required — `docker-compose.yml` sets everything the services need, and there is no `.env` file. The RTSP credentials for ring-mqtt's internal stream server are read from `data/ring-mqtt/config.json`, which ring-mqtt manages itself.
+None are required — `docker-compose.yml` sets everything the services need, and there is no `.env` file. To set one, add it under the service's `environment:` in `docker-compose.override.yml`. The RTSP credentials for ring-mqtt's internal stream server are read from `data/ring-mqtt/config.json`, which ring-mqtt manages itself.
 
 These are worth knowing if you deviate from the default compose setup:
 
@@ -220,6 +228,10 @@ These are worth knowing if you deviate from the default compose setup:
 | `RING_MQTT_STATE` | alongside the config | ring-mqtt's state file, where the Ring refresh token is written |
 | `STATIC_DIR` | `static` | Built frontend. Skipped when absent, so the backend can run without it in development |
 | `TZ` | `UTC` | Timezone for clip filenames and logs. Set it to match the UI, e.g. `TZ=Europe/Berlin` |
+| `WEBRTC_CANDIDATE_HOST` | the host the browser used | Address browsers use to reach port 8555 for WebRTC. Only needed behind a reverse proxy on another machine |
+| `WEBRTC_PORT` | `8555` | Published WebRTC port, if you map 8555 to something else on the host |
+| `MQTT_HOST` / `MQTT_PORT` | `mosquitto` / `1883` | Broker for the webapp and recorder — see [Using an Existing MQTT Broker](#using-an-existing-mqtt-broker) |
+| `VIDEO_PATH` | `/videos` | Recordings folder inside the webapp and recorder containers |
 | `EVENTS_FILE` | alongside settings | Persisted event feed |
 | `SNAPSHOT_DIR` | alongside settings | Persisted camera thumbnails |
 
@@ -238,6 +250,9 @@ These are worth knowing if you deviate from the default compose setup:
 | Low battery threshold | 20% | Battery percentage that triggers the low battery alert |
 | Notify on connection lost | ✅ | Alert when a device goes offline |
 | App password | — | Protect the dashboard with a bcrypt password |
+| Home Assistant URL / token | — | Enables the HA panel |
+| HA entity filter | `ring, doorbell` | Comma-separated terms matched against entity IDs and friendly names |
+| Cameras | all shown | Rename cameras or hide them from the dashboard |
 
 Settings are stored in `data/webapp/settings.json` and take effect immediately — no restart needed.
 
@@ -270,7 +285,7 @@ Only two ports are published. Everything else talks over the Docker network.
 >
 > Ring Off tells the browser to reach 8555 on the same host name you opened the dashboard with. If you access it through a reverse proxy on a *different* machine, set `WEBRTC_CANDIDATE_HOST` on the webapp to the IP of the Docker host.
 
-> **Why the others are closed.** The broker allows anonymous connections and ring-mqtt's setup UI has no authentication at all, so publishing them hands anyone on your network your Ring topics and camera streams. Each is a one-line `ports:` entry in `docker-compose.yml` if you need it — put a password on Mosquitto first if you expose 1883 for Home Assistant.
+> **Why the others are closed.** The broker allows anonymous connections and ring-mqtt's setup UI has no authentication at all, so publishing them hands anyone on your network your Ring topics and camera streams. Each is a one-line `ports:` entry in `docker-compose.override.yml` if you need it (see the example file) — put a password on Mosquitto first if you expose 1883 for Home Assistant.
 
 ### Docker socket
 
@@ -315,16 +330,15 @@ If you already run a Mosquitto instance (e.g. as part of Home Assistant or anoth
 
 **1. Remove the `mosquitto` service from `docker-compose.yml`**
 
-Delete or comment out the entire `mosquitto:` block and remove `mosquitto` from every `depends_on`.
+Delete or comment out the entire `mosquitto:` block and remove `mosquitto` from every `depends_on`. This is the one change that cannot live in `docker-compose.override.yml`, because an override cannot remove the `depends_on` entries — update with `git stash && git pull && git stash pop` afterwards (see [Updating](#updating)).
 
 **2. Update ring-mqtt's config to point at your broker**
 
-ring-mqtt in Docker mode reads its MQTT connection from `data/ring-mqtt/config.json`, not from environment variables. Edit the file directly:
+ring-mqtt in Docker mode reads its MQTT connection from `data/ring-mqtt/config.json`, not from environment variables. Change `mqtt_url` there and keep the other fields (the Ring token lives in `ring-state.json`, not in this file):
 
 ```json
 {
-  "mqtt_url": "mqtt://192.168.1.100:1883",
-  "ring_token": "..."
+  "mqtt_url": "mqtt://192.168.1.100:1883"
 }
 ```
 
@@ -332,8 +346,7 @@ For authenticated brokers:
 
 ```json
 {
-  "mqtt_url": "mqtt://myuser:mypassword@192.168.1.100:1883",
-  "ring_token": "..."
+  "mqtt_url": "mqtt://myuser:mypassword@192.168.1.100:1883"
 }
 ```
 
@@ -341,15 +354,15 @@ For TLS (port 8883):
 
 ```json
 {
-  "mqtt_url": "mqtts://192.168.1.100:8883",
-  "ring_token": "..."
+  "mqtt_url": "mqtts://192.168.1.100:8883"
 }
 ```
 
 **3. Update webapp and recorder environment variables**
 
 ```yaml
-# docker-compose.yml
+# docker-compose.override.yml
+services:
 
   webapp:
     environment:
@@ -388,20 +401,20 @@ docker compose up -d
 3. Create a Long-Lived Access Token in HA → Profile → Security
 4. Paste the token and save
 
-The **Home Assistant** panel in the sidebar will then display all Ring-related entities from your HA instance.
+The **HA** panel in the sidebar (bottom bar on phones) then lists matching entities from your HA instance. By default it matches `ring` and `doorbell`; adjust **HA entity filter** in Settings if your entities are named differently, e.g. in another language.
 
 ---
 
 ## Docker Images
 
-Pre-built multi-platform images (amd64 + arm64) are published to GitHub Container Registry on every push to `main` and on every version tag:
+Pre-built multi-platform images (amd64 + arm64) are published to GitHub Container Registry:
 
-| Image | Tag |
+| Image | Tags |
 |---|---|
-| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.2`, `1.2.5` |
-| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.2`, `1.2.5` |
+| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.4`, `1.4.0`, `staging` |
+| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.4`, `1.4.0`, `staging` |
 
-`docker-compose.yml` pulls `latest` by default. To pin to a specific version replace `latest` with a version tag.
+`latest` follows `main`, version tags are fixed releases, and `staging` is the pre-release branch. `docker-compose.yml` pulls `latest`; to pin a version, set `image:` for both services in `docker-compose.override.yml`.
 
 To build from source instead, see the [Development](#development) section.
 
@@ -422,27 +435,13 @@ docker compose logs --tail=50 <service>  # check a specific service
 
 **Symptom:** Repeated `Unable to connect to MQTT broker` lines in `docker compose logs ring-mqtt`.
 
-**Most common cause (fresh deployment):** ring-mqtt's first-run token setup writes a minimal `config.json` that contains only `ring_token` — `mqtt_url` and other required fields are missing. Since v1.2.1 this is fixed automatically by a startup wrapper, but if you are on an older version you can patch it manually:
+**Most common cause (fresh deployment):** ring-mqtt's first-run token setup writes a minimal `config.json` that contains only `ring_token` — `mqtt_url` and other required fields are missing. Since v1.2.1 `config/ring-mqtt-init.sh` adds the missing fields on every start, so a restart repairs it:
 
 ```bash
-# On the host, in the project directory:
-docker exec ring-mqtt cat /data/config.json \
-  | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-d.setdefault('mqtt_url', 'mqtt://mosquitto:1883')
-d.setdefault('mqtt_options', '')
-d.setdefault('enable_cameras', True)
-d.setdefault('enable_modes', False)
-d.setdefault('enable_panic', False)
-d.setdefault('hass_topic', 'homeassistant/status')
-d.setdefault('ring_topic', 'ring')
-d.setdefault('location_ids', [])
-d.setdefault('disarm_code', '')
-print(json.dumps(d, indent=2))
-" | tee data/ring-mqtt/config.json
 docker compose restart ring-mqtt
 ```
+
+If it persists, check that `mqtt_url` in `data/ring-mqtt/config.json` points at your broker (`mqtt://mosquitto:1883` for the bundled one).
 
 **Check:** After restart you should see `Successfully connected to MQTT broker` in the logs.
 
@@ -488,7 +487,7 @@ docker compose restart mosquitto
 
 **Cause:** ring-mqtt has never been authenticated with your Ring account. This is expected on a fresh deployment.
 
-**Fix:** Sign in through the Ring Off web UI at `:8080`. It performs the OAuth exchange (including 2FA), writes the refresh token to `data/ring-mqtt/ring-state.json`, and restarts ring-mqtt for you. The ring-mqtt setup UI on `:55123` does the same thing and remains available as a fallback.
+**Fix:** Sign in through the Ring Off web UI at `:8080`. It performs the OAuth exchange (including 2FA), writes the refresh token to `data/ring-mqtt/ring-state.json`, and `config/ring-mqtt-init.sh` restarts ring-mqtt within a few seconds so it loads the token. ring-mqtt's own setup UI (port 55123, not published) does the same and remains a fallback — see Quick Start.
 
 > The token goes in **`ring-state.json`**, not `config.json` — ring-mqtt reads it from there and `config.json` has no `ring_token` field at all. Before 1.3.0 the web UI login wrote it to the wrong file, so signing in appeared to succeed while ring-mqtt stayed unauthenticated and no cameras ever appeared.
 
@@ -505,16 +504,16 @@ docker compose restart mosquitto
    docker compose logs ring-mqtt | grep -E "Ring API|token"
    ```
    You should see `Successfully established connection to Ring API`. If not, the refresh token is expired — log in again via the Ring Off web UI.
-3. **Check MQTT topics are being published:**
+4. **Check MQTT topics are being published:**
    ```bash
    docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v -W 10
    ```
    You should see `ring/<location>/camera/<device_id>/...` topics within a few seconds.
-4. **Check go2rtc is running:**
+5. **Check go2rtc knows your cameras:**
    ```bash
-   docker compose logs go2rtc
+   docker exec ring-webapp python -c "import httpx; print(httpx.get('http://go2rtc:1984/api/streams').text)"
    ```
-   Open `http://<host>:1984` — you should see your cameras listed.
+   Each camera should be listed. go2rtc's own UI on port 1984 is not published; add it in `docker-compose.override.yml` if you want to open it in the browser.
 
 ---
 
@@ -535,7 +534,9 @@ docker compose restart mosquitto
    [webrtc] listen udp addr=...:8555
    ```
    If the TCP line is missing, something else in `config/go2rtc.yaml` has taken port 8555 — most often a leftover `rtsp: listen: ':8555'` from a pre-1.3.0 config. Remove it; go2rtc's RTSP server does not need to be reachable and its default port is fine.
-6. **Try the MJPEG fallback** — click the "MJPEG" button on the camera card. If MJPEG works but WebRTC does not, the issue is WebRTC negotiation (often a network/NAT problem between browser and server, or port 8555 not reachable).
+6. **Check port 8555 is reachable from the browser.** WebRTC media goes straight from the browser to go2rtc on 8555 (TCP and UDP), at the host name you opened the dashboard with. Behind a reverse proxy on another machine, set `WEBRTC_CANDIDATE_HOST` to the Docker host's IP.
+7. **Try the MJPEG fallback** — click the "MJPEG" button on the camera card. If MJPEG works but WebRTC does not, the issue is WebRTC negotiation, usually step 6.
+8. **Battery cameras that wake slowly** — some battery doorbells take 20 seconds or more to send the first frame, and go2rtc gives up sooner, so the player stays black. This is a known issue; try again, or use a camera that is already awake (e.g. right after motion).
 
    > MJPEG is transcoded by the webapp with ffmpeg. The Docker image ships it; if you are running the backend directly on your machine for development and ffmpeg is not installed, `/stream/<name>` returns an empty `200` and the fallback shows nothing.
 
@@ -572,8 +573,10 @@ docker compose restart mosquitto
    ```bash
    docker compose logs recorder
    ```
-2. **Check disk space** on the recordings volume.
-3. **Verify the `VIDEO_PATH` volume is writable** — the recorder container must be able to write to `/videos`.
+2. **Check the recording settings** — *Record on motion* and *Record on ding* in Settings. The log says `motion recording disabled, skipping` when one is off.
+3. **Check disk space** — the recorder stops below 512 MB free on the recordings volume and logs how much is left.
+4. **Verify the `VIDEO_PATH` volume is writable** — the recorder container must be able to write to `/videos`. On a NAS, both the recorder and the webapp need the mount (see [NAS Recording](#nas-recording)).
+5. **A clip was skipped** — one recording per camera runs at a time; an event during a running clip is skipped. Failed attempts are retried three times and logged with ffmpeg's last error line.
 
 ---
 
@@ -581,10 +584,9 @@ docker compose restart mosquitto
 
 1. **Verify the notification URL in Settings** — ntfy.sh topics must be reachable from the server (not just the browser). Test with:
    ```bash
-   docker exec ring-webapp curl -s -o /dev/null -w "%{http_code}" \
-     -d "test" https://ntfy.sh/your-topic
+   docker exec ring-webapp python -c "import httpx; print(httpx.post('https://ntfy.sh/your-topic', content=b'test').status_code)"
    ```
-   A `200` response means the server can reach ntfy.sh.
+   A `200` response means the server can reach ntfy.sh. The setup wizard's **Alerts** step also has a *Send a test notification* button that reports the exact HTTP status (**Settings → Run setup again**).
 2. **Check the webapp logs** for any HTTP errors when events fire:
    ```bash
    docker compose logs webapp | grep -i "notif\|error"
@@ -625,8 +627,8 @@ This builds `webapp` and `recorder` from source and tags them as `ring-off-webap
 ### Backend hot-reload
 
 ```bash
-# Start infrastructure only
-docker compose up mosquitto ring-mqtt go2rtc -d
+# Start infrastructure only — the dev override publishes its ports on localhost
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d mosquitto ring-mqtt go2rtc
 
 # Run backend with hot-reload
 cd webapp
@@ -634,7 +636,7 @@ pip install -r requirements.txt
 ./dev.sh
 ```
 
-`dev.sh` is a thin wrapper around `uvicorn main:app --reload --port 8080`. It exists because the defaults compiled into `main.py` are container paths (`/config`, `/videos`) and Docker network hostnames (`mosquitto`, `go2rtc`) that do not resolve on a dev machine — it points them at the repository's own `config/` and `data/` directories and at the ports the compose stack publishes on localhost. Running `uvicorn` directly still works; you will just see `Could not create /config/go2rtc.yaml` and `MQTT connect failed` on startup, and MQTT-driven features (events, device state, camera discovery) will be inert.
+`dev.sh` is a thin wrapper around `uvicorn main:app --reload --port 8080`. It exists because the defaults compiled into `main.py` are container paths (`/config`, `/videos`) and Docker network hostnames (`mosquitto`, `go2rtc`) that do not resolve on a dev machine — it points them at the repository's own `config/` and `data/` directories and at the ports `docker-compose.dev.yml` publishes on localhost (the regular stack publishes none of them). Running `uvicorn` directly still works; you will just see `Could not create /config/go2rtc.yaml` and `MQTT connect failed` on startup, and MQTT-driven features (events, device state, camera discovery) will be inert.
 
 Override any variable by exporting it first, e.g. `PORT=8081 ./dev.sh`.
 
@@ -701,7 +703,7 @@ This project is built on the shoulders of excellent open-source work:
 | [httpx](https://www.python-httpx.org) | BSD | Async HTTP client |
 | [websockets](https://websockets.readthedocs.io) | BSD | WebSocket client |
 | [paho-mqtt](https://eclipse.dev/paho/index.php?page=clients/python/index.php) | EPL-2.0 | MQTT client |
-| [docker-py](https://docker-py.readthedocs.io) | Apache-2.0 | Docker SDK for restarting containers |
+| [docker-py](https://docker-py.readthedocs.io) | Apache-2.0 | Optional container restarts, only if you mount the Docker socket |
 | [ffmpeg](https://ffmpeg.org) | LGPL/GPL | RTSP → MJPEG transcoding + clip recording |
 
 ### Frontend

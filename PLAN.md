@@ -6,7 +6,7 @@
 - **`staging`** liegt 2 Commits vor `main` (Security-Härtung, persistente Events/Snapshots, Recorder-Retries). Version steht noch auf 1.3.0, der Abschnitt `[Unreleased]` im CHANGELOG ist schon umfangreich.
 - **Tests:** vorher 148 grün. Frontend-`tsc` und `vite build` sauber. CI testet nur das Backend.
 
-## Erledigt in dieser Session (noch nicht committet)
+## Erledigt in der ersten Session (in 1.4.0 veröffentlicht)
 
 | # | Bug | Schwere |
 |---|-----|---------|
@@ -22,7 +22,13 @@
 
 Dazu 21 Regressionstests (`tests/test_security.py`, Ergänzungen in `test_recorder.py` und `test_mqtt.py`). Alle neuen Tests schlagen auf dem alten Code fehl und laufen jetzt durch: **169 grün**.
 
-## Phase 1: Absichern und releasen (kurzfristig)
+## Stand 15.11.2026
+
+- **1.4.0 ist veröffentlicht** (Tag `v1.4.0`, Release mit ZIP). PR #1–#3 sind kommentiert, #2 und #3 geschlossen.
+- **Auf `staging`, noch nicht veröffentlicht (→ 1.4.1):** Handy-Navigation, Löschschutz auf Touch-Geräten, Cache-Header für `index.html`, größere Kamerakacheln, Doorbell Gen 2 in der README, überarbeitete Dokumentation inkl. Architektur-Schaubild.
+- **Offen:** langsam aufwachende Akku-Kameras (siehe Nachtrag), Phasen 2–4.
+
+## Phase 1: Absichern und releasen (kurzfristig, erledigt mit 1.4.0)
 
 1. Fixes reviewen, auf `staging` committen, Images bauen.
 2. **Manueller Test auf echter Hardware**, weil das nicht automatisierbar ist:

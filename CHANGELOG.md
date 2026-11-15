@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Camera tiles became small in 1.4.0** — the grid switched to fixed three and four columns by window width, ignoring the sidebar, so two cameras showed as 256 px tiles next to empty space. Columns now follow the available space and the number of cameras: two cameras share the row (about 530 px each at 1440 px, 770 px at 1920 px), four still fit side by side on a wide screen, and each camera keeps its own aspect ratio.
 
 ### Changed
+- **Documentation brought up to date with 1.4** — the architecture diagram now shows the real data flows (WebRTC media straight from the browser to go2rtc on 8555, the MJPEG fallback pulling RTSP from ring-mqtt, only 8080 and 8555 published). Removed steps that no longer work: opening go2rtc on `:1984`, `curl` in the webapp image, a `ring_token` field in `config.json`, and a broker patch that could empty `config.json`. Local changes, optional services and the ring-mqtt fallback UI are documented via `docker-compose.override.yml`, and the image tags are current.
 - **Ring Video Doorbell (2nd Gen)** added to the compatible hardware list, reported working by a user.
 
 ## [1.4.0] - 2026-11-15

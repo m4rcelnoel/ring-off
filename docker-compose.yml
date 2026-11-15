@@ -6,7 +6,8 @@ services:
     restart: unless-stopped
     # Not published. The broker allows anonymous access, so exposing it would
     # let anyone on your network read and inject Ring topics. To point Home
-    # Assistant at it, add:  ports: ["1883:1883"]  — and set a password first.
+    # Assistant at it, publish 1883 in docker-compose.override.yml (see the
+    # example file) — and set a password first.
     volumes:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./data/mosquitto:/mosquitto/data
@@ -25,8 +26,8 @@ services:
     # Neither port is published. 8554 is the RTSP server, reached over the Docker
     # network by go2rtc and the recorder. 55123 is ring-mqtt's own token setup
     # UI, which has no authentication and is no longer needed — the Ring Off
-    # setup wizard does the sign-in. To use it as a fallback, temporarily add:
-    #   ports: ["55123:55123"]
+    # setup wizard does the sign-in. To use it as a fallback, temporarily
+    # publish 55123 in docker-compose.override.yml.
     volumes:
       - ./data/ring-mqtt:/data
       - ./config/ring-mqtt-init.sh:/ring-mqtt-init.sh:ro
@@ -52,7 +53,7 @@ services:
       - "8555:8555/tcp"
       - "8555:8555/udp"
       # go2rtc's own UI and API stay internal; the webapp proxies what it needs.
-      # Add "1984:1984" if you want to open the go2rtc UI directly.
+      # Publish 1984 in docker-compose.override.yml to open the go2rtc UI directly.
     volumes:
       # Mount the directory, not the single file: if config/go2rtc.yaml does not
       # exist yet, a file bind-mount makes Docker silently create a *directory*
@@ -87,7 +88,8 @@ services:
       # go2rtc is updated over its REST API, and config/ring-mqtt-init.sh restarts
       # ring-mqtt from inside its own container once a Ring token appears.
       #
-      # Uncomment for an immediate restart instead of that wait:
+      # Only if you want the webapp to restart containers itself, mount it in
+      # docker-compose.override.yml:
       # - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - MQTT_HOST=mosquitto

@@ -16,8 +16,9 @@ webrtc:
 # data/ring-mqtt/config.json — they are NOT your Ring account login, and they no
 # longer come from .env.
 #
-# To name a camera yourself, add an entry manually. The name on the left becomes
-# the label in the UI. Find your device IDs with:
+# To rename a camera, use Settings → Cameras in the web UI; that name is what the
+# dashboard shows. Manual entries are only needed for unusual setups — the name
+# on the left is then used as a fallback label. Find your device IDs with:
 #   docker exec ring-mosquitto mosquitto_sub -h 127.0.0.1 -p 1883 -t 'ring/#' -v -W 10
 # Look for topics like:
 #   ring/<location-id>/camera/<DEVICE_ID>/motion/state
