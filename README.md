@@ -412,8 +412,8 @@ Pre-built multi-platform images (amd64 + arm64) are published to GitHub Containe
 
 | Image | Tags |
 |---|---|
-| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.4`, `1.4.1`, `staging` |
-| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.4`, `1.4.1`, `staging` |
+| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.4`, `1.4.2`, `staging` |
+| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.4`, `1.4.2`, `staging` |
 
 `latest` follows `main`, version tags are fixed releases, and `staging` is the pre-release branch. `docker-compose.yml` pulls `latest`; to pin a version, set `image:` for both services in `docker-compose.override.yml`.
 
@@ -605,7 +605,7 @@ Work lands on `staging` first; `main` only ever receives merges from it.
 |---|---|---|
 | `staging` | tests + typecheck, then build | `ghcr.io/…:staging` |
 | `main` | tests + typecheck, then build | `ghcr.io/…:main` and `:latest` |
-| tag `v*` | — | `:1.4.1`, `:1.4` + GitHub release |
+| tag `v*` | — | `:1.4.2`, `:1.4` + GitHub release |
 
 `main` is protected: no direct pushes, and the `Tests` job has to be green before a pull request can be merged. To try a change before it reaches `main`, point the images at `:staging` in `docker-compose.override.yml`:
 

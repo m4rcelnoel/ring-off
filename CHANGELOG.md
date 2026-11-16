@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-16
+
+### Upgrading
+
+Nothing to do: no configuration, ports or data change. If a camera regularly needs more than a minute to wake up, raise the new `STREAM_WAKE_TIMEOUT` (seconds, default 60) for the webapp and the recorder in `docker-compose.override.yml`.
+
+This release fixes the known issue from 1.4.0 and 1.4.1, battery cameras that wake slowly and never streamed.
+
 ### Fixed
 - **Slow-waking battery cameras never streamed** — go2rtc waits a fixed 5 seconds for ring-mqtt to answer an RTSP request, and its `#timeout=` option does not change that, but ring-mqtt answers only once the camera sends video: over 20 seconds for a battery doorbell that has to wake up. go2rtc gave up, ring-mqtt stopped the half-started stream, and every retry started over. The webapp now wakes the camera itself first, holding an RTSP session on ring-mqtt for up to `STREAM_WAKE_TIMEOUT` (60 s), and only then connects the player to go2rtc. The session lasts as long as someone watches and closes with the viewer — or with the webapp, so a crash cannot leave a camera streaming. If the viewer leaves while the camera wakes, waking is cancelled.
 - **Recordings and the MJPEG fallback failed for the same cameras** — ffmpeg's socket timeout (15 s for the recorder, 30 s for MJPEG) also limited the wait for the stream to start. Both now use `STREAM_WAKE_TIMEOUT`.
