@@ -232,6 +232,7 @@ These are worth knowing if you deviate from the default compose setup:
 | `WEBRTC_PORT` | `8555` | Published WebRTC port, if you map 8555 to something else on the host |
 | `MQTT_HOST` / `MQTT_PORT` | `mosquitto` / `1883` | Broker for the webapp and recorder — see [Using an Existing MQTT Broker](#using-an-existing-mqtt-broker) |
 | `VIDEO_PATH` | `/videos` | Recordings folder inside the webapp and recorder containers |
+| `STREAM_WAKE_TIMEOUT` | `60` | Seconds to wait for a camera to start streaming — for the live view, the MJPEG fallback and recordings. Battery doorbells can need over 20 s |
 | `EVENTS_FILE` | alongside settings | Persisted event feed |
 | `SNAPSHOT_DIR` | alongside settings | Persisted camera thumbnails |
 
@@ -411,8 +412,8 @@ Pre-built multi-platform images (amd64 + arm64) are published to GitHub Containe
 
 | Image | Tags |
 |---|---|
-| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.4`, `1.4.1`, `staging` |
-| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.4`, `1.4.1`, `staging` |
+| `ghcr.io/m4rcelnoel/ring-off-webapp` | `latest`, `1.4`, `1.4.2`, `staging` |
+| `ghcr.io/m4rcelnoel/ring-off-recorder` | `latest`, `1.4`, `1.4.2`, `staging` |
 
 `latest` follows `main`, version tags are fixed releases, and `staging` is the pre-release branch. `docker-compose.yml` pulls `latest`; to pin a version, set `image:` for both services in `docker-compose.override.yml`.
 
@@ -536,7 +537,7 @@ docker compose restart mosquitto
    If the TCP line is missing, something else in `config/go2rtc.yaml` has taken port 8555 — most often a leftover `rtsp: listen: ':8555'` from a pre-1.3.0 config. Remove it; go2rtc's RTSP server does not need to be reachable and its default port is fine.
 6. **Check port 8555 is reachable from the browser.** WebRTC media goes straight from the browser to go2rtc on 8555 (TCP and UDP), at the host name you opened the dashboard with. Behind a reverse proxy on another machine, set `WEBRTC_CANDIDATE_HOST` to the Docker host's IP.
 7. **Try the MJPEG fallback** — click the "MJPEG" button on the camera card. If MJPEG works but WebRTC does not, the issue is WebRTC negotiation, usually step 6.
-8. **Battery cameras that wake slowly** — some battery doorbells take 20 seconds or more to send the first frame, and go2rtc gives up sooner, so the player stays black. This is a known issue; try again, or use a camera that is already awake (e.g. right after motion).
+8. **Battery cameras that wake slowly** — some battery doorbells take 20 seconds or more to send the first frame. Ring Off waits for the camera before handing the stream to go2rtc, up to `STREAM_WAKE_TIMEOUT` (60 s by default); the webapp log shows `Camera <id> awake after …s`. If a camera regularly needs longer, raise the variable for the webapp and the recorder.
 
    > MJPEG is transcoded by the webapp with ffmpeg. The Docker image ships it; if you are running the backend directly on your machine for development and ffmpeg is not installed, `/stream/<name>` returns an empty `200` and the fallback shows nothing.
 
@@ -604,7 +605,7 @@ Work lands on `staging` first; `main` only ever receives merges from it.
 |---|---|---|
 | `staging` | tests + typecheck, then build | `ghcr.io/…:staging` |
 | `main` | tests + typecheck, then build | `ghcr.io/…:main` and `:latest` |
-| tag `v*` | — | `:1.4.1`, `:1.4` + GitHub release |
+| tag `v*` | — | `:1.4.2`, `:1.4` + GitHub release |
 
 `main` is protected: no direct pushes, and the `Tests` job has to be green before a pull request can be merged. To try a change before it reaches `main`, point the images at `:staging` in `docker-compose.override.yml`:
 

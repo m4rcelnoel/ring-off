@@ -29,6 +29,14 @@ services:
   #   ports:
   #     - "1883:1883"
 
+  # ── Battery cameras that need more than a minute to wake up ─────────────────
+  # webapp:
+  #   environment:
+  #     - STREAM_WAKE_TIMEOUT=90
+  # recorder:
+  #   environment:
+  #     - STREAM_WAKE_TIMEOUT=90
+
   # ── WebRTC behind a reverse proxy on another machine ────────────────────────
   # webapp:
   #   environment:
