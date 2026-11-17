@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en" data-theme="dark"
+  data-title-de="Ring Off – Ring-Klingel selbst gehostet, ohne Abo"
+  data-title-en="Ring Off – Self-hosted Ring doorbell, no subscription"
+  data-desc-de="Live-Bild, lokale Aufnahmen bei Bewegung und Klingeln, Push-Nachrichten und Akkustand für deine Ring-Kameras. Selbst gehostet, Open Source, ohne Ring-Abo."
+  data-desc-en="Live streams, local motion and doorbell recordings, push notifications and device status for your Ring cameras. Self-hosted, open source, no Ring subscription.">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ring Off – Self-hosted Ring doorbell, no subscription</title>
+  <meta name="description" content="Live streams, local motion and doorbell recordings, push notifications and device status for your Ring cameras. Self-hosted, open source, no Ring subscription." />
+  <meta property="og:title" content="Ring Off – your Ring doorbell, no subscription" />
+  <meta property="og:description" content="Live streams, local recordings and push notifications for Ring cameras. Self-hosted and open source." />
+  <meta property="og:image" content="https://m4rcelnoel.github.io/ring-off/webinterface.png" />
+  <meta property="og:type" content="website" />
+  <meta name="theme-color" content="#05060b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f5f6fa" media="(prefers-color-scheme: light)" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%236366f1'/><circle cx='50' cy='50' r='20' fill='%23fff'/></svg>" />
+  <script>
+    // Pick language and theme before first paint: saved choice, else the browser's.
+    // The theme key is VitePress's, so light/dark is shared with the docs.
+    (function () {
+      var d = document.documentElement, lang, theme;
+      try { lang = localStorage.getItem('ro-lang'); theme = localStorage.getItem('vitepress-theme-appearance'); } catch (e) {}
+      if (!lang) lang = /^de\b/i.test(navigator.language || '') ? 'de' : 'en';
+      if (theme !== 'dark' && theme !== 'light') theme = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      d.lang = lang; d.dataset.theme = theme; d.classList.add('js');
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-gh" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-person" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/></symbol>
+  <symbol id="i-motion" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3l3-8 4 16 3-8h7"/></symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="m4 3 16 18"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-chime" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="3"/><circle cx="12" cy="14" r="2.5"/><path d="M10 7h4"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <div class="nav-in">
+      <a class="brand" href="#top" aria-label="Ring Off"><span class="logo"><i></i></span>Ring Off</a>
+      <nav class="nav-links">
+        <a href="#features"><span lang="de">Funktionen</span><span lang="en">Features</span></a>
+        <a href="#privacy"><span lang="de">Datenschutz</span><span lang="en">Privacy</span></a>
+        <a href="#install"><span lang="de">Installation</span><span lang="en">Install</span></a>
+        <a href="#faq">FAQ</a>
+        <a lang="de" href="docs/de/">Doku</a><a lang="en" href="docs/">Docs</a>
+      </nav>
+      <div class="seg" role="group" aria-label="Language">
+        <button type="button" data-lang="de" aria-pressed="false">DE</button><span>·</span><button type="button" data-lang="en" aria-pressed="false">EN</button>
+      </div>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle dark mode">
+        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <a class="btn btn-brand btn-sm" href="https://github.com/m4rcelnoel/ring-off"><svg><use href="#i-gh"/></svg><span class="lbl">GitHub</span></a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <!-- HERO -->
+  <div class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="badge"><span class="dot"></span><span lang="de">Open Source · v1.4.2 · Docker</span><span lang="en">Open source · v1.4.2 · Docker</span></span>
+        <h1 lang="de">Deine Ring-Klingel.<br /><em>Ohne Abo.</em></h1>
+        <h1 lang="en">Your Ring doorbell.<br /><em>No subscription.</em></h1>
+        <p class="lead" lang="de">Live-Bild, Aufnahmen bei Bewegung und Klingeln, Push-Nachrichten und Akkustand – selbst gehostet auf deinem Server. Die Clips bleiben bei dir zu Hause.</p>
+        <p class="lead" lang="en">Live view, recordings on motion and doorbell presses, push notifications and battery status – self-hosted on your own server. Your clips stay at home.</p>
+        <div class="cta">
+          <a class="btn btn-brand" href="#install"><span lang="de">In 5 Minuten installieren</span><span lang="en">Install in 5 minutes</span></a>
+          <a class="btn" lang="de" href="docs/de/">Zur Dokumentation</a><a class="btn" lang="en" href="docs/">Read the docs</a>
+        </div>
+        <ul class="ticks">
+          <li><svg><use href="#i-check"/></svg><span lang="de">Kein Ring-Abo</span><span lang="en">No Ring Protect</span></li>
+          <li><svg><use href="#i-check"/></svg><span lang="de">Clips lokal</span><span lang="en">Local clips</span></li>
+          <li><svg><use href="#i-check"/></svg><span lang="de">Läuft auf dem Raspberry Pi</span><span lang="en">Runs on a Raspberry Pi</span></li>
+          <li><svg><use href="#i-check"/></svg><span lang="de">MIT-Lizenz</span><span lang="en">MIT licensed</span></li>
+        </ul>
+      </div>
+
+      <div class="stage">
+        <div class="browser">
+          <div class="bar"><i></i><i></i><i></i><span>ring-off.local:8080</span></div>
+          <img src="webinterface.png" width="1800" height="1099" alt="Ring Off dashboard with live camera cards, chimes and the event feed" />
+        </div>
+        <div class="float f-note">
+          <span class="logo"><i></i></span>
+          <div><small>Ring Off · <span lang="de">jetzt</span><span lang="en">now</span></small><b lang="de">Es hat geklingelt</b><b lang="en">Someone's at the door</b><small lang="de">Haustür · Clip gespeichert</small><small lang="en">Front door · clip saved</small></div>
+        </div>
+        <div class="float f-chip">
+          <span class="ic"><svg><use href="#i-person"/></svg></span>
+          <div><b lang="de">Person erkannt</b><b lang="en">Person detected</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEPS -->
+  <section id="how">
+    <div class="wrap">
+      <div class="rv">
+        <div class="eyebrow"><span lang="de">So einfach geht's</span><span lang="en">How it works</span></div>
+        <h2 lang="de">Drei Schritte. Keine Config-Dateien.</h2>
+        <h2 lang="en">Three steps. No config files.</h2>
+      </div>
+      <div class="steps">
+        <div class="card rv">
+          <div class="num">1</div>
+          <h3><span lang="de">Starten</span><span lang="en">Start</span></h3>
+          <p lang="de">Repository klonen, <code>docker compose up -d</code> – fertig. Alle Dienste laufen in Containern, Zugangsdaten werden selbst erzeugt.</p>
+          <p lang="en">Clone the repo, run <code>docker compose up -d</code> – done. Every service runs in a container and credentials are generated for you.</p>
+        </div>
+        <div class="card rv">
+          <div class="num">2</div>
+          <h3><span lang="de">Bei Ring anmelden</span><span lang="en">Sign in to Ring</span></h3>
+          <p lang="de">Der Einrichtungsassistent im Browser prüft alle Dienste und meldet dich bei Ring an – mit Zwei-Faktor-Code.</p>
+          <p lang="en">The setup wizard in your browser checks every service and signs you in to Ring – including your 2FA code.</p>
+        </div>
+        <div class="card rv">
+          <div class="num">3</div>
+          <h3><span lang="de">Zurücklehnen</span><span lang="en">Sit back</span></h3>
+          <p lang="de">Kameras tauchen von selbst auf. Jede Bewegung, jedes Klingeln wird aufgenommen und landet auf Wunsch als Push auf dem Handy.</p>
+          <p lang="en">Cameras show up on their own. Every motion and ring is recorded and, if you like, pushed straight to your phone.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="wrap">
+      <div class="rv">
+        <div class="eyebrow"><span lang="de">Funktionen</span><span lang="en">Features</span></div>
+        <h2 lang="de">Alles, was die Ring-App kann. Auf deiner Hardware.</h2>
+        <h2 lang="en">Everything you'd expect. On hardware you own.</h2>
+        <p class="sec-lead" lang="de">Gebaut auf bewährten Open-Source-Projekten – ring-mqtt, go2rtc, Mosquitto und ffmpeg – in einer einzigen, aufgeräumten Oberfläche.</p>
+        <p class="sec-lead" lang="en">Built on proven open-source projects – ring-mqtt, go2rtc, Mosquitto and ffmpeg – in one clean interface.</p>
+      </div>
+
+      <div class="bento">
+        <!-- recordings -->
+        <div class="card b-wide rv">
+          <div>
+            <span class="tag"><span lang="de">Aufnahmen</span><span lang="en">Recording</span></span>
+            <h3><span lang="de">Jedes Klingeln. Jede Bewegung.</span><span lang="en">Every ring. Every motion.</span></h3>
+            <p lang="de">Bei jedem Ereignis wird ein Clip lokal gespeichert – Dauer und Ereignistyp einstellbar. Personen bekommen ein eigenes Abzeichen, alte Clips löscht eine Aufbewahrungsregel automatisch.</p>
+            <p lang="en">A clip is saved locally on every event, with configurable duration and event types. People get their own badge, and a retention policy cleans up old clips automatically.</p>
+          </div>
+          <div class="mock" aria-hidden="true">
+            <div class="row"><span class="ri"><svg><use href="#i-bell"/></svg></span><span class="rt"><b><span lang="de">Haustür · Klingeln</span><span lang="en">Front door · Ding</span></b><small>18:42 · 0:30</small></span><span class="pill p-brand">Clip</span></div>
+            <div class="row"><span class="ri"><svg><use href="#i-person"/></svg></span><span class="rt"><b><span lang="de">Einfahrt · Bewegung</span><span lang="en">Driveway · Motion</span></b><small>17:15 · 0:20</small></span><span class="pill p-ok"><span lang="de">Person</span><span lang="en">Person</span></span></div>
+            <div class="row"><span class="ri"><svg><use href="#i-motion"/></svg></span><span class="rt"><b><span lang="de">Haustür · Bewegung</span><span lang="en">Front door · Motion</span></b><small>14:03 · 0:20</small></span><span class="pill p-brand">Clip</span></div>
+          </div>
+        </div>
+
+        <!-- live -->
+        <div class="card b-2 rv">
+          <span class="tag">Live</span>
+          <h3><span lang="de">Live-Bild im Browser</span><span lang="en">Live view in the browser</span></h3>
+          <p lang="de">go2rtc wählt automatisch, was Browser und Netz hergeben. Akku-Kameras werden vorher geweckt.</p>
+          <p lang="en">go2rtc picks whatever your browser and network allow. Battery cameras get woken up first.</p>
+          <div class="chips"><span class="chip">WebRTC</span><span class="chip">MSE</span><span class="chip">MJPEG</span></div>
+        </div>
+
+        <!-- push -->
+        <div class="card b-3 rv">
+          <span class="tag">Push</span>
+          <h3><span lang="de">Benachrichtigungen, wie du sie willst</span><span lang="en">Notifications your way</span></h3>
+          <p lang="de">Über ntfy.sh oder Gotify, für jeden Ereignistyp einzeln schaltbar.</p>
+          <p lang="en">Via ntfy.sh or Gotify, switchable per event type.</p>
+          <div class="mock" aria-hidden="true">
+            <div class="row"><span class="rt"><b><span lang="de">Klingeln</span><span lang="en">Doorbell</span></b></span><span class="tog on"></span></div>
+            <div class="row"><span class="rt"><b><span lang="de">Bewegung</span><span lang="en">Motion</span></b></span><span class="tog on"></span></div>
+            <div class="row"><span class="rt"><b><span lang="de">Akku schwach</span><span lang="en">Low battery</span></b></span><span class="tog on"></span></div>
+            <div class="row"><span class="rt"><b><span lang="de">Verbindung verloren</span><span lang="en">Connection lost</span></b></span><span class="tog"></span></div>
+          </div>
+        </div>
+
+        <!-- device status -->
+        <div class="card b-3 rv">
+          <span class="tag"><span lang="de">Status</span><span lang="en">Status</span></span>
+          <h3><span lang="de">Akku und WLAN im Blick</span><span lang="en">Battery and WiFi at a glance</span></h3>
+          <p lang="de">Akkustand und Signal jeder Kamera, WLAN-Signal der Gongs – direkt auf dem Dashboard.</p>
+          <p lang="en">Battery level and signal for every camera, WiFi for chimes – right on the dashboard.</p>
+          <div class="mock" aria-hidden="true">
+            <div class="row"><span class="ri"><svg><use href="#i-cam"/></svg></span><span class="rt"><b><span lang="de">Haustür</span><span lang="en">Front door</span></b><div class="meter"><i style="width:82%"></i></div></span><span class="pill p-ok">82 %</span></div>
+            <div class="row"><span class="ri"><svg><use href="#i-cam"/></svg></span><span class="rt"><b><span lang="de">Garten</span><span lang="en">Garden</span></b><div class="meter"><i style="width:18%;background:var(--warn)"></i></div></span><span class="pill p-warn">18 %</span></div>
+            <div class="row"><span class="ri"><svg><use href="#i-chime"/></svg></span><span class="rt"><b><span lang="de">Gong Flur</span><span lang="en">Hallway chime</span></b><small>−52 dBm</small></span><span class="bars"><i style="height:30%"></i><i style="height:55%"></i><i style="height:80%"></i><i class="off" style="height:100%"></i></span></div>
+          </div>
+        </div>
+
+        <!-- setup -->
+        <div class="card b-3 rv">
+          <span class="tag"><span lang="de">Einrichtung</span><span lang="en">Setup</span></span>
+          <h3><span lang="de">Kameras finden sich selbst</span><span lang="en">Cameras find themselves</span></h3>
+          <p lang="de">Neue Geräte aus MQTT werden automatisch zu go2rtc hinzugefügt. Umbenennen oder ausblenden geht jederzeit in den Einstellungen.</p>
+          <p lang="en">New devices found via MQTT are added to go2rtc automatically. Rename or hide them any time in settings.</p>
+          <div class="wiz" aria-hidden="true">
+            <span><span lang="de">Prüfung</span><span lang="en">Checks</span></span>
+            <span>Ring</span>
+            <span><span lang="de">Geräte</span><span lang="en">Devices</span></span>
+            <span class="cur"><span lang="de">Kameras</span><span lang="en">Cameras</span></span>
+          </div>
+        </div>
+
+        <!-- extras -->
+        <div class="card b-3 rv">
+          <span class="tag"><span lang="de">Extras</span><span lang="en">Extras</span></span>
+          <h3><span lang="de">Durchdacht bis ins Detail</span><span lang="en">Thought through</span></h3>
+          <p lang="de">Responsive Oberfläche mit Navigationsleiste am Handy, Home-Assistant-Panel und Docker-Images für x86-64 und arm64.</p>
+          <p lang="en">Responsive layout with a bottom bar on phones, a Home Assistant panel and Docker images for x86-64 and arm64.</p>
+          <div class="chips"><span class="chip">Home Assistant</span><span class="chip">Raspberry Pi</span><span class="chip"><span lang="de">Handy-tauglich</span><span lang="en">Phone-friendly</span></span><span class="chip">WebSocket</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRIVACY -->
+  <section id="privacy">
+    <div class="wrap">
+      <div class="band rv">
+        <div class="eyebrow"><span lang="de">Datenschutz</span><span lang="en">Privacy</span></div>
+        <h2 lang="de">Deine Aufnahmen gehören dir. Nur dir.</h2>
+        <h2 lang="en">Your footage belongs to you. Only you.</h2>
+        <p class="sec-lead" lang="de">Clips, Ereignisse und Einstellungen liegen in einem Ordner auf deinem Server – nicht in einer fremden Cloud.</p>
+        <p class="sec-lead" lang="en">Clips, events and settings live in a folder on your server – not in someone else's cloud.</p>
+        <div class="tiles">
+          <div class="tile"><svg><use href="#i-home"/></svg><b><span lang="de">Lokal gespeichert</span><span lang="en">Stored locally</span></b><span lang="de">Alles in <code>data/</code> auf deinem Rechner.</span><span lang="en">Everything in <code>data/</code> on your machine.</span></div>
+          <div class="tile"><svg><use href="#i-card"/></svg><b><span lang="de">Kein Abo</span><span lang="en">No subscription</span></b><span lang="de">Aufnahmen und Verlauf ohne Ring Protect.</span><span lang="en">Recordings and history without Ring Protect.</span></div>
+          <div class="tile"><svg><use href="#i-db"/></svg><b><span lang="de">NAS-fähig</span><span lang="en">NAS-ready</span></b><span lang="de">Aufnahmeordner mit zwei Zeilen aufs NAS legen.</span><span lang="en">Point recordings at your NAS in two lines.</span></div>
+          <div class="tile"><svg><use href="#i-lock"/></svg><b><span lang="de">Passwortschutz</span><span lang="en">Password protection</span></b><span lang="de">Optionales Login, Passwort als bcrypt-Hash.</span><span lang="en">Optional login, password stored as bcrypt hash.</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INSTALL -->
+  <section id="install">
+    <div class="wrap">
+      <div class="rv">
+        <div class="eyebrow"><span lang="de">Installation</span><span lang="en">Install</span></div>
+        <h2 lang="de">In fünf Minuten startklar.</h2>
+        <h2 lang="en">Up and running in five minutes.</h2>
+        <p class="sec-lead" lang="de">Alles, was du brauchst, ist ein Rechner, der durchläuft – Heimserver, NAS mit Docker oder Raspberry Pi.</p>
+        <p class="sec-lead" lang="en">All you need is a machine that stays on – a home server, a NAS with Docker or a Raspberry Pi.</p>
+      </div>
+      <div class="install">
+        <div class="term rv">
+          <div class="bar"><i></i><i></i><i></i></div>
+          <div class="term-body">
+            <div class="cmd">
+              <div class="cmd-h"><b>1</b><span lang="de">Repository klonen</span><span lang="en">Clone the repository</span></div>
+              <pre><button class="copy" type="button"><span lang="de">Kopieren</span><span lang="en">Copy</span></button><code><span class="p">$ </span>git clone https://github.com/m4rcelnoel/ring-off.git
+<span class="p">$ </span>cd ring-off</code></pre>
+            </div>
+            <div class="cmd">
+              <div class="cmd-h"><b>2</b><span lang="de">Stack starten</span><span lang="en">Start the stack</span></div>
+              <pre><button class="copy" type="button"><span lang="de">Kopieren</span><span lang="en">Copy</span></button><code><span class="p">$ </span>docker compose up -d</code></pre>
+            </div>
+            <div class="cmd">
+              <div class="cmd-h"><b>3</b><span lang="de">Browser öffnen und Assistent folgen</span><span lang="en">Open the browser and follow the wizard</span></div>
+              <pre><code>http://&lt;server-ip&gt;:8080</code></pre>
+            </div>
+            <p class="term-note"><span lang="de">Später aktualisieren:</span><span lang="en">Update later:</span> <code>git pull &amp;&amp; docker compose pull &amp;&amp; docker compose up -d</code></p>
+          </div>
+        </div>
+
+        <div class="side">
+          <div class="card rv">
+            <h3><span lang="de">Voraussetzungen</span><span lang="en">Requirements</span></h3>
+            <ul class="list">
+              <li><span>Docker</span><span>24+</span></li>
+              <li><span>Docker Compose</span><span>v2.20+</span></li>
+              <li><span><span lang="de">Ring-Konto</span><span lang="en">Ring account</span></span><span><span lang="de">kostenlos, ohne Abo</span><span lang="en">free, no subscription</span></span></li>
+              <li><span><span lang="de">Architektur</span><span lang="en">Architecture</span></span><span>x86-64 · arm64</span></li>
+            </ul>
+          </div>
+          <div class="card rv">
+            <h3><span lang="de">Getestete Geräte</span><span lang="en">Tested devices</span></h3>
+            <ul class="list">
+              <li><span>Video Doorbell 3</span><span class="pill p-ok"><span lang="de">getestet</span><span lang="en">tested</span></span></li>
+              <li><span>Video Doorbell (2nd Gen)</span><span class="pill p-ok"><span lang="de">läuft</span><span lang="en">works</span></span></li>
+            </ul>
+            <a class="more" lang="de" href="docs/de/guide/installation">Vollständige Anleitung in der Doku →</a><a class="more" lang="en" href="docs/guide/installation">Full guide in the docs →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq">
+    <div class="wrap faq">
+      <div class="rv">
+        <div class="eyebrow"><span lang="de">Fragen</span><span lang="en">Questions</span></div>
+        <h2 lang="de">Gut zu wissen.</h2>
+        <h2 lang="en">Good to know.</h2>
+        <p style="margin:0;display:grid;gap:6px"><a class="more" lang="de" style="color:var(--brand-ink);font-weight:600" href="docs/de/troubleshooting">Fehlerbehebung in der Doku →</a><a class="more" lang="en" style="color:var(--brand-ink);font-weight:600" href="docs/troubleshooting">Troubleshooting in the docs →</a><a class="more" style="color:var(--brand-ink);font-weight:600" href="https://github.com/m4rcelnoel/ring-off/issues"><span lang="de">Frage stellen auf GitHub →</span><span lang="en">Ask on GitHub →</span></a></p>
+      </div>
+      <div class="rv">
+        <details open>
+          <summary><span lang="de">Brauche ich ein Ring-Abo?</span><span lang="en">Do I need a Ring subscription?</span></summary>
+          <p lang="de">Nein. Ein normales, kostenloses Ring-Konto reicht. Aufnahmen, Verlauf und Benachrichtigungen übernimmt Ring Off auf deinem Server.</p>
+          <p lang="en">No. A regular free Ring account is enough. Ring Off handles recordings, history and notifications on your own server.</p>
+        </details>
+        <details>
+          <summary><span lang="de">Spricht meine Kamera dann gar nicht mehr mit Ring?</span><span lang="en">Does my camera stop talking to Ring entirely?</span></summary>
+          <p lang="de">Doch – Ring-Kameras gehen immer über die Ring-Cloud, das lässt sich nicht umgehen. Ring Off holt Bild und Ereignisse über ring-mqtt ab und speichert Clips, Ereignisse und Einstellungen ausschließlich bei dir.</p>
+          <p lang="en">They still do – Ring cameras always connect through the Ring cloud, there's no way around that. Ring Off fetches video and events via ring-mqtt and stores clips, events and settings only on your machine.</p>
+        </details>
+        <details>
+          <summary><span lang="de">Funktioniert meine Kamera?</span><span lang="en">Will my camera work?</span></summary>
+          <p lang="de">Getestet sind die Video Doorbell 3 und die Video Doorbell (2nd Gen). Alles, was ring-mqtt unterstützt – Akku-, Kabel-, Innen- und Außenkameras – sollte ebenfalls laufen.</p>
+          <p lang="en">The Video Doorbell 3 and Video Doorbell (2nd Gen) are tested. Anything ring-mqtt supports – battery, wired, indoor and outdoor cameras – should work too.</p>
+        </details>
+        <details>
+          <summary><span lang="de">Läuft das auf einem Raspberry Pi?</span><span lang="en">Does it run on a Raspberry Pi?</span></summary>
+          <p lang="de">Ja. Die Docker-Images gibt es für x86-64 und arm64, also auch für den Raspberry Pi 4 und 5.</p>
+          <p lang="en">Yes. Docker images are published for x86-64 and arm64, so a Raspberry Pi 4 or 5 works.</p>
+        </details>
+        <details>
+          <summary><span lang="de">Kann ich die Aufnahmen auf mein NAS legen?</span><span lang="en">Can I store recordings on my NAS?</span></summary>
+          <p lang="de">Ja. In <code>docker-compose.override.yml</code> zeigst du den Aufnahmeordner mit zwei Zeilen auf eine NAS-Freigabe.</p>
+          <p lang="en">Yes. Two lines in <code>docker-compose.override.yml</code> point the recordings folder at a NAS share.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <div class="final rv">
+      <div>
+        <h2 lang="de">Klingel zu Hause, Aufnahmen auch.</h2>
+        <h2 lang="en">Your doorbell is at home. So is your footage.</h2>
+        <p lang="de">Ring Off ist kostenlos und Open Source. Issues, Ideen und Pull Requests sind willkommen.</p>
+        <p lang="en">Ring Off is free and open source. Issues, ideas and pull requests are welcome.</p>
+      </div>
+      <div class="cta">
+        <a class="btn btn-brand" href="https://github.com/m4rcelnoel/ring-off"><svg><use href="#i-gh"/></svg><span lang="de">Auf GitHub ansehen</span><span lang="en">View on GitHub</span></a>
+        <a class="btn" href="https://github.com/m4rcelnoel/ring-off/releases">Releases</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <span class="brand"><span class="logo"><i></i></span>Ring Off · MIT</span>
+      <nav>
+        <a href="https://github.com/m4rcelnoel/ring-off">GitHub</a>
+        <a lang="de" href="docs/de/">Dokumentation</a><a lang="en" href="docs/">Documentation</a>
+        <a href="https://github.com/m4rcelnoel/ring-off/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/tsightler/ring-mqtt">ring-mqtt</a>
+        <a href="https://github.com/AlexxIT/go2rtc">go2rtc</a>
+        <a href="datenschutz.html"><span lang="de">Datenschutz</span><span lang="en">Privacy</span></a>
+      </nav>
+    </div>
+    <p class="disc" lang="de">Ring Off ist ein unabhängiges Community-Projekt und steht in keiner Verbindung zu Ring LLC oder Amazon. „Ring“ ist eine Marke des jeweiligen Inhabers.</p>
+    <p class="disc" lang="en">Ring Off is an independent community project and is not affiliated with, endorsed by or sponsored by Ring LLC or Amazon. “Ring” is a trademark of its respective owner.</p>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

@@ -1,5 +1,9 @@
 # ── Stage 1: Build React frontend ────────────────────────────────────────────
-FROM node:20-alpine AS frontend
+# The output (dist/, version.txt) is plain static files, identical for every
+# architecture, so this stage runs once on the build machine's own platform.
+# Emulating it for arm64 under QEMU was slow and could crash npm ci with
+# "qemu: uncaught target signal 4 (Illegal instruction)", hanging the CI build.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
