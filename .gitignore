@@ -33,3 +33,8 @@ webapp/frontend/bun.lock
 .idea/
 .vscode/
 *.swp
+
+# Documentation site (VitePress)
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/

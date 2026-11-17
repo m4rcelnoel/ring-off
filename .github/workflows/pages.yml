@@ -1,0 +1,68 @@
+name: Deploy GitHub Pages
+
+# Landing page (site/) at /ring-off/, VitePress docs (docs/) at /ring-off/docs/.
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'docs/**', '.github/workflows/pages.yml']
+  pull_request:
+    branches: [main]
+    paths: ['site/**', 'docs/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # VitePress "last updated" reads git history
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Build docs
+        working-directory: docs
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -R site/. _site/
+          cp -R docs/.vitepress/dist _site/docs
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy site
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

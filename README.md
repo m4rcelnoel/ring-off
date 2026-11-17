@@ -4,6 +4,8 @@ Self-hosted Ring doorbell management: live camera streams, motion & doorbell eve
 
 > **No cloud. No subscription. Your data stays at home.**
 
+**📖 Documentation:** [m4rcelnoel.github.io/ring-off/docs](https://m4rcelnoel.github.io/ring-off/docs/) · [Deutsch](https://m4rcelnoel.github.io/ring-off/docs/de/)
+
 ![Ring Off Web Interface](image/webinterface.png)
 
 ---

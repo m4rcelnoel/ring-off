@@ -1,0 +1,37 @@
+/* Match the landing page: indigo brand, near-black dark mode. */
+:root {
+  --vp-c-brand-1: #4f46e5;
+  --vp-c-brand-2: #4338ca;
+  --vp-c-brand-3: #6366f1;
+  --vp-c-brand-soft: rgba(99, 102, 241, 0.14);
+  --vp-c-bg-alt: #f5f6fa;
+  --vp-home-hero-name-color: transparent;
+  --vp-button-brand-bg: #4f46e5;
+  --vp-button-brand-hover-bg: #4338ca;
+}
+
+.dark {
+  --vp-c-brand-1: #a5b4fc;
+  --vp-c-brand-2: #818cf8;
+  --vp-c-brand-3: #6366f1;
+  --vp-c-brand-soft: rgba(99, 102, 241, 0.16);
+  --vp-c-bg: #05060b;
+  --vp-c-bg-alt: #0a0c14;
+  --vp-c-bg-elv: #0d0f18;
+  --vp-c-bg-soft: #11131e;
+  --vp-c-divider: #1f2336;
+  --vp-c-gutter: #000;
+  --vp-code-block-bg: #0b0d16;
+  --vp-button-brand-bg: #6366f1;
+  --vp-button-brand-hover-bg: #5458e8;
+}
+
+.VPNavBarTitle .title { font-weight: 700; letter-spacing: -0.01em; }
+
+/* Tables of variables read better with the name column unbroken. */
+.vp-doc table td:first-child code { white-space: nowrap; }
+.vp-doc table { font-size: 14.5px; }
+
+.ro-doc-note { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--vp-c-divider); font-size: 13px; color: var(--vp-c-text-3); }
+.ro-doc-note a { color: var(--vp-c-text-2); text-decoration: underline; text-underline-offset: 2px; }
+.ro-doc-note a:hover { color: var(--vp-c-brand-1); }
